@@ -529,8 +529,8 @@
                     <label class="cleanup-option"><input type="checkbox" checked data-module="ghost"><span class="option-label">Ghost Note Removal</span></label>
                     <label class="cleanup-option"><input type="checkbox" checked data-module="fragment"><span class="option-label">Fragment Repair</span></label>
                     <label class="cleanup-option"><input type="checkbox" checked data-module="pitch"><span class="option-label">Pitch Flicker Repair</span></label>
-                    <label class="cleanup-option"><input type="checkbox" checked data-module="chord"><span class="option-label">Chord Reconstruction</span></label>
-                    <label class="cleanup-option"><input type="checkbox" checked data-module="phrase"><span class="option-label">Phrase Reconstruction</span></label>
+                    <label class="cleanup-option"><input type="checkbox" data-module="chord"><span class="option-label">Chord Reconstruction</span></label>
+                    <label class="cleanup-option"><input type="checkbox" data-module="phrase"><span class="option-label">Phrase Reconstruction</span></label>
                     <label class="cleanup-option"><input type="checkbox" checked data-module="audio"><span class="option-label">🔊 Audio-Assisted</span></label>
                 </div>
             </div>
@@ -975,6 +975,8 @@
                     audioData,
                 } = context;
                 
+                this.currentTempo = tempo || 120;
+                this.currentPPQ = ppq || 480;
                 let confidence = 0;
                 const reasons = [];
                 const evidence = {};
@@ -1051,8 +1053,9 @@
             }
 
             getAudioSupport(note, chromagram, audioData, sampleRate, hopSize) {
-                const noteStart = note.start / 480 * 0.5; // Rough time in seconds
-                const noteEnd = (note.end || note.start + 240) / 480 * 0.5;
+                const secondsPerTick = (60 / Math.max(1, this.currentTempo || 120)) / Math.max(1, this.currentPPQ || 480);
+                const noteStart = note.start * secondsPerTick;
+                const noteEnd = (note.end || note.start + 240) * secondsPerTick;
                 
                 const startFrame = Math.floor(noteStart * sampleRate / hopSize);
                 const endFrame = Math.floor(noteEnd * sampleRate / hopSize);
@@ -1593,95 +1596,80 @@
             }
 
             static writeTrack(events, ppq, tempoMap, timeSignatures, keySignatures) {
+                // Merge every event into one absolute-time timeline before delta encoding.
+                // The previous implementation wrote all metadata first and then skipped
+                // note events whose times were earlier than the last metadata event.
+                const timeline = [];
+
+                for (const t of (tempoMap || [])) {
+                    timeline.push({ time: Math.max(0, Math.floor(t.time || 0)), type: 'tempo', tempo: t.tempo || 500000 });
+                }
+                for (const ts of (timeSignatures || [])) {
+                    timeline.push({
+                        time: Math.max(0, Math.floor(ts.time || 0)),
+                        type: 'time_signature',
+                        numerator: ts.numerator || 4,
+                        denominator: ts.denominator || 4,
+                    });
+                }
+                for (const ks of (keySignatures || [])) {
+                    timeline.push({
+                        time: Math.max(0, Math.floor(ks.time || 0)),
+                        type: 'key_signature',
+                        key: Number.isFinite(ks.key) ? ks.key : 0,
+                        scale: ks.scale || 0,
+                    });
+                }
+                timeline.push(...events.map(ev => ({ ...ev, time: Math.max(0, Math.floor(ev.time || 0)) })));
+
+                // At the same tick: metadata first, note-offs before note-ons.
+                const priority = { tempo: 0, time_signature: 1, key_signature: 2, note_off: 3, note_on: 4 };
+                timeline.sort((a, b) => a.time - b.time || (priority[a.type] ?? 9) - (priority[b.type] ?? 9));
+
                 const trackData = [];
                 let currentTime = 0;
-                
-                // Write tempo events
-                for (const t of tempoMap) {
-                    const delta = t.time - currentTime;
-                    if (delta >= 0) {
-                        trackData.push(...this.writeVarLen(delta));
-                        trackData.push(0xFF, 0x51, 0x03);
-                        const tempo = t.tempo || 500000;
-                        trackData.push((tempo >> 16) & 0xFF);
-                        trackData.push((tempo >> 8) & 0xFF);
-                        trackData.push(tempo & 0xFF);
-                        currentTime = t.time;
-                    }
-                }
+                for (const ev of timeline) {
+                    const delta = Math.max(0, ev.time - currentTime);
+                    trackData.push(...this.writeVarLen(delta));
 
-                // Write time signatures
-                for (const ts of timeSignatures) {
-                    const delta = ts.time - currentTime;
-                    if (delta >= 0) {
-                        trackData.push(...this.writeVarLen(delta));
-                        trackData.push(0xFF, 0x58, 0x04);
-                        trackData.push(ts.numerator || 4);
-                        trackData.push(Math.log2(ts.denominator || 4));
-                        trackData.push(24);
-                        trackData.push(8);
-                        currentTime = ts.time;
-                    }
-                }
-
-                // Write key signatures
-                for (const ks of keySignatures) {
-                    const delta = ks.time - currentTime;
-                    if (delta >= 0) {
-                        trackData.push(...this.writeVarLen(delta));
-                        trackData.push(0xFF, 0x59, 0x02);
-                        trackData.push(ks.key || 0);
-                        trackData.push(ks.scale || 0);
-                        currentTime = ks.time;
-                    }
-                }
-
-                // Write note events
-                const sortedEvents = [...events].sort((a, b) => a.time - b.time);
-                for (const ev of sortedEvents) {
-                    const delta = ev.time - currentTime;
-                    if (delta < 0) continue;
-                    
-                    trackData.push(...this.writeVarLen(Math.floor(delta)));
-                    
-                    if (ev.type === 'note_on') {
-                        trackData.push(0x90 | (ev.channel & 0x0F));
-                        trackData.push(ev.note & 0x7F);
-                        trackData.push(Math.min(127, Math.max(0, ev.velocity)));
+                    if (ev.type === 'tempo') {
+                        const tempo = Math.max(1, Math.floor(ev.tempo));
+                        trackData.push(0xFF, 0x51, 0x03, (tempo >> 16) & 0xFF, (tempo >> 8) & 0xFF, tempo & 0xFF);
+                    } else if (ev.type === 'time_signature') {
+                        const denominatorPower = Math.max(0, Math.round(Math.log2(ev.denominator || 4)));
+                        trackData.push(0xFF, 0x58, 0x04, ev.numerator & 0xFF, denominatorPower & 0xFF, 24, 8);
+                    } else if (ev.type === 'key_signature') {
+                        trackData.push(0xFF, 0x59, 0x02, ev.key & 0xFF, ev.scale & 0xFF);
+                    } else if (ev.type === 'note_on') {
+                        trackData.push(0x90 | (ev.channel & 0x0F), ev.note & 0x7F, Math.min(127, Math.max(1, ev.velocity | 0)));
                     } else if (ev.type === 'note_off') {
-                        trackData.push(0x80 | (ev.channel & 0x0F));
-                        trackData.push(ev.note & 0x7F);
-                        trackData.push(0);
+                        trackData.push(0x80 | (ev.channel & 0x0F), ev.note & 0x7F, 0);
                     }
-                    
                     currentTime = ev.time;
                 }
 
-                // End of track
                 trackData.push(0x00, 0xFF, 0x2F, 0x00);
-
-                // Wrap in track chunk
-                const header = new Uint8Array([0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x00]);
-                const result = new Uint8Array(header.length + trackData.length);
-                result.set(header, 0);
-                result.set(trackData, header.length);
-                
-                const view = new DataView(result.buffer);
-                view.setUint32(4, trackData.length);
-                
+                const result = new Uint8Array(8 + trackData.length);
+                result.set([0x4D, 0x54, 0x72, 0x6B], 0);
+                new DataView(result.buffer).setUint32(4, trackData.length);
+                result.set(trackData, 8);
                 return result;
             }
 
             static writeVarLen(value) {
+                // MIDI VLQ is most-significant group first. The old function emitted
+                // groups least-significant first, turning ordinary gaps into huge delays.
+                let v = Math.max(0, Math.floor(value));
+                let buffer = v & 0x7F;
                 const bytes = [];
-                let v = value;
-                if (v < 0) v = 0;
+                while ((v >>= 7) > 0) {
+                    buffer <<= 8;
+                    buffer |= ((v & 0x7F) | 0x80);
+                }
                 while (true) {
-                    let b = v & 0x7F;
-                    v >>= 7;
-                    if (v > 0) b |= 0x80;
-                    bytes.push(b);
-                    if (v === 0) break;
+                    bytes.push(buffer & 0xFF);
+                    if (buffer & 0x80) buffer >>= 8;
+                    else break;
                 }
                 return bytes;
             }
@@ -2254,80 +2242,31 @@
                 result = repaired;
             }
 
-            // 6. Chord reconstruction
-            if (modules.chord && state.chords.length > 0) {
-                const chordNotes = [];
-                for (const chord of state.chords) {
-                    if (chord.rootIndex !== undefined) {
-                        chordNotes.push(...chordDetector.getChordNotes(chord.rootIndex, chord.type, 4));
-                        chordNotes.push(...chordDetector.getChordNotes(chord.rootIndex, chord.type, 5));
-                    }
-                }
-                // Add missing chord notes if they don't exist
-                const existingNotes = new Set(result.map(n => `${n.note}|${Math.round(n.start/240)}`));
-                for (const cn of chordNotes) {
-                    const key = `${cn}|${Math.round(0)}`;
-                    if (!existingNotes.has(key)) {
-                        // Find appropriate time position
-                        const time = Math.floor(Math.random() * 240) * 10;
-                        result.push({
-                            id: state.noteIdCounter++,
-                            note: cn,
-                            start: time,
-                            end: time + 120,
-                            duration: 120,
-                            velocity: 60,
-                            channel: 0,
-                            track: 0,
-                            reconstructed: true,
-                        });
-                    }
-                }
+            // 6. Chord-aware validation (non-generative)
+            // Never invent notes. Audio-to-MIDI cleanup must only remove, merge,
+            // shorten or retime existing notes unless the user explicitly requests generation.
+            if (modules.chord && state.chords.length > 0 && confidenceEngine) {
+                result = result.filter(n => {
+                    const evidence = confidenceEngine.getEvidence(n);
+                    // Keep uncertain notes unless both chord and audio evidence are very weak.
+                    return !((evidence.chordAgreement ?? 0.5) < 0.15 && (evidence.audioSupport ?? 0.5) < 0.12);
+                });
             }
 
-            // 7. Phrase reconstruction
+            // 7. Phrase continuity repair (non-generative)
+            // Only trim overlaps between consecutive notes in the same channel.
+            // Do not add interpolated pitches into silent gaps.
             if (modules.phrase) {
-                // Simple phrase detection: group notes by gaps
-                const sorted = [...result].sort((a, b) => a.start - b.start);
-                const phrases = [];
-                let currentPhrase = [];
-                let lastEnd = 0;
-                for (const n of sorted) {
-                    if (currentPhrase.length > 0 && n.start - lastEnd > 240) {
-                        if (currentPhrase.length > 1) phrases.push(currentPhrase);
-                        currentPhrase = [];
-                    }
-                    currentPhrase.push(n);
-                    lastEnd = n.end || n.start + 240;
-                }
-                if (currentPhrase.length > 1) phrases.push(currentPhrase);
-                
-                // Fill gaps in phrases
-                for (const phrase of phrases) {
-                    for (let i = 0; i < phrase.length - 1; i++) {
-                        const current = phrase[i];
-                        const next = phrase[i + 1];
-                        const gap = next.start - (current.end || current.start + 240);
-                        if (gap > 50 && gap < 500) {
-                            // Add a note to bridge the gap (if within range)
-                            const midNote = Math.round((current.note + next.note) / 2);
-                            if (midNote > 20 && midNote < 110) {
-                                const bridgeNote = {
-                                    id: state.noteIdCounter++,
-                                    note: midNote,
-                                    start: current.end || current.start + 240,
-                                    end: next.start,
-                                    duration: gap,
-                                    velocity: Math.round((current.velocity + next.velocity) / 2),
-                                    channel: current.channel || 0,
-                                    track: current.track || 0,
-                                    bridged: true,
-                                };
-                                result.push(bridgeNote);
-                            }
-                        }
+                const sorted = [...result].sort((a, b) => a.start - b.start || a.note - b.note);
+                for (let i = 0; i < sorted.length - 1; i++) {
+                    const current = sorted[i];
+                    const next = sorted[i + 1];
+                    if ((current.channel || 0) === (next.channel || 0) && current.end > next.start && current.note !== next.note) {
+                        current.end = Math.max(current.start + 1, next.start);
+                        current.duration = current.end - current.start;
                     }
                 }
+                result = sorted;
             }
 
             // 8. Audio-assisted validation
