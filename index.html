@@ -862,10 +862,11 @@
                 return { format, tracks, ticksPerBeat, trackData };
             }
 
-            static extractNotes(trackData, ticksPerBeat, tempo) {
+            static extractNotes(trackData, ticksPerBeat, defaultMpqn) {
                 const notes = [];
                 let currentTime = 0;
                 const activeNotes = new Map();
+                let firstTempoMpqn = null;
 
                 for (const track of trackData) {
                     let pos = 0;
@@ -895,7 +896,18 @@
                             // Meta or SysEx
                             if (status === 0xFF) {
                                 const metaType = data[pos++];
-                                const metaLength = data[pos++];
+                                // Meta event length is a variable-length quantity,
+                                // not a single byte - a fixed-byte read desyncs
+                                // parsing on any meta event with length >= 128.
+                                let metaLength = 0;
+                                let mByte;
+                                do {
+                                    mByte = data[pos++];
+                                    metaLength = (metaLength << 7) | (mByte & 0x7F);
+                                } while (mByte & 0x80);
+                                if (metaType === 0x51 && metaLength === 3 && firstTempoMpqn === null) {
+                                    firstTempoMpqn = (data[pos] << 16) | (data[pos+1] << 8) | data[pos+2];
+                                }
                                 pos += metaLength;
                                 continue;
                             }
@@ -960,6 +972,7 @@
                     });
                 }
 
+                notes.mpqn = firstTempoMpqn || defaultMpqn;
                 return notes.sort((a, b) => a.start - b.start || a.note - b.note);
             }
         }
@@ -974,8 +987,19 @@
                     maxVelocity: 110,
                     quantizeStrength: 70,
                     mergeGap: 0.015,
+                    ticksPerBeat: 480,
+                    tempo: 120,
                     ...options
                 };
+                // Convert real-time (seconds) thresholds to ticks using the
+                // actual file's timebase, since note.start/end are stored in
+                // raw MIDI ticks, not milliseconds.
+                this.ticksPerSecond = (this.options.ticksPerBeat * this.options.tempo) / 60;
+                this.minNoteDurationTicks = this.options.minNoteDuration * this.ticksPerSecond;
+                this.mergeGapTicks = this.options.mergeGap * this.ticksPerSecond;
+                this.flickerGapTicks = 0.05 * this.ticksPerSecond; // ~50ms
+                this.overlapBufferTicks = Math.max(1, Math.round(0.01 * this.ticksPerSecond)); // ~10ms
+                this.fillGapTicks = 0.1 * this.ticksPerSecond; // ~100ms
                 this.removedCount = 0;
                 this.mergedCount = 0;
                 this.correctedCount = 0;
@@ -1013,12 +1037,12 @@
 
             removeGhosts(notes) {
                 return notes.filter(n => {
-                    const duration = (n.end - n.start) / 1000; // Rough ms conversion
+                    const durationTicks = n.end - n.start;
                     if (n.velocity < this.options.minVelocity) {
                         this.removedCount++;
                         return false;
                     }
-                    if (duration < this.options.minNoteDuration) {
+                    if (durationTicks < this.minNoteDurationTicks) {
                         this.removedCount++;
                         return false;
                     }
@@ -1039,7 +1063,7 @@
                         const next = sorted[j];
                         const gap = next.start - current.end;
                         const samePitch = next.note === current.note;
-                        const smallGap = gap < (this.options.mergeGap * 1000);
+                        const smallGap = gap < this.mergeGapTicks;
 
                         if (samePitch && smallGap && gap > 0) {
                             // Merge fragments
@@ -1063,7 +1087,7 @@
             repairTiming(notes) {
                 // Simple quantisation to 16th notes
                 const strength = this.options.quantizeStrength / 100;
-                const grid = Math.max(1, Math.round((state.ticksPerBeat||960)/4)); // 16th note from imported PPQ
+                const grid = Math.max(1, Math.round((this.options.ticksPerBeat||960)/4)); // 16th note from imported PPQ
                 const result = notes.map(n => {
                     const startTick = n.start;
                     const quantizedStart = Math.round(startTick / grid) * grid;
@@ -1106,8 +1130,8 @@
                     const next2 = notes[i + 2];
 
                     if (next && next2) {
-                        const close1 = Math.abs(next.start - current.end) < 50;
-                        const close2 = Math.abs(next2.start - next.end) < 50;
+                        const close1 = Math.abs(next.start - current.end) < this.flickerGapTicks;
+                        const close2 = Math.abs(next2.start - next.end) < this.flickerGapTicks;
                         const samePitch = current.note === next2.note;
                         const diff = Math.abs(next.note - current.note) === 1;
 
@@ -1142,7 +1166,7 @@
                         if (existing.note === n.note) {
                             if (n.start < existing.end && n.start > existing.start) {
                                 // Trim overlapping note
-                                n.start = existing.end + 10;
+                                n.start = existing.end + this.overlapBufferTicks;
                                 if (n.start >= n.end) {
                                     this.removedCount++;
                                     overlapping = true;
@@ -1167,7 +1191,7 @@
                     const last = result[result.length - 1];
                     if (last && last.note === n.note) {
                         const gap = n.start - last.end;
-                        if (gap > 0 && gap < 100) {
+                        if (gap > 0 && gap < this.fillGapTicks) {
                             // Fill the gap
                             last.end = n.end;
                             last.duration = last.end - last.start;
@@ -1384,11 +1408,11 @@
         function parseMIDI(arrayBuffer) {
             try {
                 const parsed = MIDIParser.parse(arrayBuffer);
-                state.tempo = 120;
                 state.ticksPerBeat = parsed.ticksPerBeat;
                 state.trackCount = parsed.tracks;
 
                 const notes = MIDIParser.extractNotes(parsed.trackData, parsed.ticksPerBeat, 500000);
+                state.tempo = Math.round(60000000 / (notes.mpqn || 500000));
                 state.notes = notes;
                 state.originalNotes = notes.map(n => ({ ...n }));
                 state.isCleaned = false;
@@ -1513,6 +1537,8 @@
                 maxVelocity: 110,
                 quantizeStrength: 70,
                 mergeGap: 0.015,
+                ticksPerBeat: state.ticksPerBeat || 480,
+                tempo: state.tempo || 120,
             };
 
             if (instrument === 'bass') {
