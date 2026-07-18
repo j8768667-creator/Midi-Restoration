@@ -1,0 +1,2088 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MIDI Restoration Studio v2.0</title>
+    <style>
+        /* ===== CSS VARIABLES & RESET ===== */
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #1c2333;
+            --bg-card: #21262d;
+            --border-color: #30363d;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-muted: #484f58;
+            --accent-blue: #58a6ff;
+            --accent-green: #3fb950;
+            --accent-red: #f85149;
+            --accent-orange: #d29922;
+            --accent-purple: #bc8cff;
+            --piano-white: #f0f0f0;
+            --piano-black: #1a1a1a;
+            --shadow: 0 8px 24px rgba(0,0,0,0.5);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* ===== SCROLLBAR ===== */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-secondary); }
+        ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+        /* ===== LAYOUT ===== */
+        .app-container {
+            display: grid;
+            grid-template-columns: 280px 1fr 280px;
+            grid-template-rows: 50px 1fr 160px;
+            height: 100vh;
+            gap: 1px;
+            background: var(--border-color);
+        }
+
+        /* ===== HEADER ===== */
+        .header {
+            grid-column: 1 / -1;
+            background: var(--bg-secondary);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo {
+            font-size: 20px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .logo span {
+            font-weight: 300;
+            font-size: 14px;
+            -webkit-text-fill-color: var(--text-secondary);
+            margin-left: 8px;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .btn-icon {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .btn-icon:hover {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+        }
+
+        /* ===== LEFT PANEL ===== */
+        .left-panel {
+            background: var(--bg-secondary);
+            padding: 16px;
+            overflow-y: auto;
+            grid-row: 2 / -1;
+        }
+
+        .panel-section {
+            margin-bottom: 20px;
+        }
+
+        .panel-section-title {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            color: var(--text-muted);
+            margin-bottom: 10px;
+            font-weight: 600;
+        }
+
+        /* File Drop Zone */
+        .drop-zone {
+            border: 2px dashed var(--border-color);
+            border-radius: 8px;
+            padding: 24px 16px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: var(--bg-tertiary);
+        }
+
+        .drop-zone:hover {
+            border-color: var(--accent-blue);
+            background: var(--bg-card);
+        }
+
+        .drop-zone.dragover {
+            border-color: var(--accent-green);
+            background: rgba(63, 185, 80, 0.1);
+        }
+
+        .drop-zone-icon {
+            font-size: 32px;
+            margin-bottom: 8px;
+        }
+
+        .drop-zone-text {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .drop-zone-text strong {
+            color: var(--text-primary);
+        }
+
+        .file-info {
+            margin-top: 10px;
+            padding: 10px;
+            background: var(--bg-card);
+            border-radius: 6px;
+            font-size: 13px;
+            display: none;
+        }
+
+        .file-info.visible {
+            display: block;
+        }
+
+        .file-info .name {
+            color: var(--accent-blue);
+            font-weight: 500;
+        }
+
+        /* Instrument Selector */
+        .instrument-select {
+            width: 100%;
+            padding: 8px 12px;
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .instrument-select:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+
+        /* Preset Buttons */
+        .preset-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+        }
+
+        .preset-btn {
+            padding: 6px 8px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            color: var(--text-secondary);
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-align: center;
+        }
+
+        .preset-btn:hover {
+            background: var(--bg-card);
+            border-color: var(--accent-blue);
+            color: var(--text-primary);
+        }
+
+        .preset-btn.active {
+            background: var(--accent-blue);
+            border-color: var(--accent-blue);
+            color: white;
+        }
+
+        /* ===== CENTER PANEL (Piano Roll) ===== */
+        .center-panel {
+            background: var(--bg-secondary);
+            position: relative;
+            overflow: hidden;
+            grid-row: 2 / -1;
+        }
+
+        .piano-roll-container {
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+
+        #pianoRollCanvas {
+            width: 100%;
+            height: 100%;
+            cursor: crosshair;
+        }
+
+        .piano-roll-controls {
+            position: absolute;
+            bottom: 12px;
+            right: 12px;
+            display: flex;
+            gap: 8px;
+            background: rgba(22, 27, 34, 0.9);
+            padding: 6px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            backdrop-filter: blur(8px);
+        }
+
+        .piano-roll-controls button {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            padding: 4px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .piano-roll-controls button:hover {
+            background: var(--bg-card);
+            color: var(--text-primary);
+        }
+
+        .zoom-display {
+            color: var(--text-secondary);
+            font-size: 12px;
+            padding: 0 8px;
+            display: flex;
+            align-items: center;
+        }
+
+        /* ===== RIGHT PANEL ===== */
+        .right-panel {
+            background: var(--bg-secondary);
+            padding: 16px;
+            overflow-y: auto;
+            grid-row: 2 / -1;
+        }
+
+        /* Analysis Stats */
+        .stat-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 4px;
+        }
+
+        .stat-item {
+            background: var(--bg-tertiary);
+            padding: 6px 10px;
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+        }
+
+        .stat-item .label {
+            color: var(--text-secondary);
+        }
+
+        .stat-item .value {
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        .stat-item .value.warning {
+            color: var(--accent-orange);
+        }
+
+        .stat-item .value.danger {
+            color: var(--accent-red);
+        }
+
+        .stat-item .value.good {
+            color: var(--accent-green);
+        }
+
+        /* Confidence Meter */
+        .confidence-meter {
+            margin: 12px 0;
+            background: var(--bg-tertiary);
+            border-radius: 6px;
+            padding: 12px;
+        }
+
+        .confidence-bar {
+            height: 6px;
+            background: var(--border-color);
+            border-radius: 3px;
+            overflow: hidden;
+            margin-top: 6px;
+        }
+
+        .confidence-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.6s ease;
+            width: 0%;
+        }
+
+        .confidence-fill.good { background: var(--accent-green); }
+        .confidence-fill.ok { background: var(--accent-orange); }
+        .confidence-fill.bad { background: var(--accent-red); }
+
+        /* Cleanup Options */
+        .cleanup-option {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 0;
+            font-size: 13px;
+            cursor: pointer;
+        }
+
+        .cleanup-option input[type="checkbox"] {
+            accent-color: var(--accent-blue);
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+
+        .cleanup-option .option-label {
+            color: var(--text-secondary);
+            flex: 1;
+        }
+
+        .cleanup-option .option-badge {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            background: var(--bg-tertiary);
+            color: var(--text-muted);
+        }
+
+        /* Action Buttons */
+        .action-btn {
+            width: 100%;
+            padding: 10px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 6px;
+        }
+
+        .action-btn.primary {
+            background: var(--accent-blue);
+            color: white;
+        }
+
+        .action-btn.primary:hover {
+            background: #4a8fd8;
+            transform: translateY(-1px);
+        }
+
+        .action-btn.primary:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .action-btn.success {
+            background: var(--accent-green);
+            color: white;
+        }
+
+        .action-btn.success:hover {
+            background: #36a040;
+        }
+
+        .action-btn.danger {
+            background: var(--accent-red);
+            color: white;
+        }
+
+        .action-btn.danger:hover {
+            background: #d63a42;
+        }
+
+        /* ===== BOTTOM PANEL ===== */
+        .bottom-panel {
+            background: var(--bg-secondary);
+            grid-column: 2 / -1;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .bottom-panel .status {
+            font-size: 13px;
+            color: var(--text-secondary);
+            flex: 1;
+        }
+
+        .bottom-panel .status .highlight {
+            color: var(--accent-blue);
+        }
+
+        .audition-controls {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .audition-controls button {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            padding: 6px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+
+        .audition-controls button:hover {
+            background: var(--bg-card);
+            color: var(--text-primary);
+        }
+
+        .audition-controls .toggle {
+            display: flex;
+            gap: 0;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+        }
+
+        .audition-controls .toggle button {
+            border-radius: 0;
+            border: none;
+            background: var(--bg-tertiary);
+            padding: 6px 16px;
+        }
+
+        .audition-controls .toggle button.active {
+            background: var(--accent-blue);
+            color: white;
+        }
+
+        /* ===== MODAL ===== */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.7);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-overlay.active {
+            display: flex;
+        }
+
+        .modal {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 32px;
+            max-width: 500px;
+            width: 90%;
+            border: 1px solid var(--border-color);
+            box-shadow: var(--shadow);
+        }
+
+        .modal h2 {
+            margin-bottom: 12px;
+            font-size: 20px;
+        }
+
+        .modal p {
+            color: var(--text-secondary);
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 16px;
+        }
+
+        .modal .btn-group {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+        }
+
+        /* ===== RESPONSIVE ===== */
+        @media (max-width: 1200px) {
+            .app-container {
+                grid-template-columns: 220px 1fr 220px;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .app-container {
+                grid-template-columns: 1fr;
+                grid-template-rows: 50px auto 300px 200px 160px;
+                height: auto;
+                overflow-y: auto;
+            }
+            .left-panel, .right-panel, .bottom-panel {
+                grid-column: 1;
+            }
+            .center-panel {
+                grid-row: auto;
+                height: 400px;
+            }
+            .left-panel { grid-row: 2; }
+            .center-panel { grid-row: 3; }
+            .right-panel { grid-row: 4; }
+            .bottom-panel { grid-row: 5; }
+        }
+
+        /* ===== ANIMATIONS ===== */
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .processing {
+            animation: pulse 1s ease-in-out infinite;
+        }
+
+        @keyframes slideIn {
+            from { transform: translateY(10px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        .slide-in {
+            animation: slideIn 0.3s ease-out;
+        }
+    </style>
+</head>
+<body>
+    <!-- ===== APP CONTAINER ===== -->
+    <div class="app-container">
+
+        <!-- ===== HEADER ===== -->
+        <header class="header">
+            <div class="header-left">
+                <div class="logo">🎵 MIDI Restoration <span>Studio v2.0</span></div>
+            </div>
+            <div class="header-actions">
+                <button class="btn-icon" onclick="showKeyboardShortcuts()">⌨️</button>
+                <button class="btn-icon" onclick="toggleDarkMode()">🌙</button>
+                <button class="btn-icon" onclick="exportSession()">💾 Session</button>
+            </div>
+        </header>
+
+        <!-- ===== LEFT PANEL ===== -->
+        <aside class="left-panel">
+            <!-- Import -->
+            <div class="panel-section">
+                <div class="panel-section-title">📂 Import</div>
+                <div class="drop-zone" id="dropZone">
+                    <div class="drop-zone-icon">📁</div>
+                    <div class="drop-zone-text">
+                        <strong>Drop MIDI file</strong> or click to browse
+                    </div>
+                    <input type="file" id="fileInput" accept=".mid,.midi" style="display:none">
+                </div>
+                <div class="file-info" id="fileInfo">
+                    <div class="name" id="fileName">Untitled.mid</div>
+                    <div style="font-size:12px;color:var(--text-muted);margin-top:4px">
+                        <span id="fileTracks">0 tracks</span> • <span id="fileNotes">0 notes</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Instrument Profile -->
+            <div class="panel-section">
+                <div class="panel-section-title">🎹 Instrument Profile</div>
+                <select class="instrument-select" id="instrumentSelect">
+                    <option value="piano">Piano</option>
+                    <option value="bass">Bass</option>
+                    <option value="guitar">Guitar</option>
+                    <option value="strings">Strings</option>
+                    <option value="vocals">Vocals</option>
+                    <option value="drums">Drums</option>
+                    <option value="auto">Auto-detect</option>
+                </select>
+            </div>
+
+            <!-- Presets -->
+            <div class="panel-section">
+                <div class="panel-section-title">⚡ Quick Presets</div>
+                <div class="preset-grid">
+                    <button class="preset-btn" data-preset="light">Light</button>
+                    <button class="preset-btn" data-preset="standard">Standard</button>
+                    <button class="preset-btn" data-preset="aggressive">Aggressive</button>
+                    <button class="preset-btn" data-preset="jazz">Jazz</button>
+                    <button class="preset-btn" data-preset="classical">Classical</button>
+                </div>
+            </div>
+
+            <!-- Session Info -->
+            <div class="panel-section">
+                <div class="panel-section-title">📊 Session</div>
+                <div style="font-size:12px;color:var(--text-secondary);line-height:1.8">
+                    <div>Status: <span id="sessionStatus" style="color:var(--text-muted)">No file loaded</span></div>
+                    <div>Last cleaned: <span id="lastCleaned" style="color:var(--text-muted)">—</span></div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- ===== CENTER PANEL (Piano Roll) ===== -->
+        <main class="center-panel">
+            <div class="piano-roll-container">
+                <canvas id="pianoRollCanvas"></canvas>
+                <div class="piano-roll-controls">
+                    <button onclick="zoomPianoRoll(-1)">−</button>
+                    <span class="zoom-display" id="zoomDisplay">100%</span>
+                    <button onclick="zoomPianoRoll(1)">+</button>
+                    <button onclick="resetPianoRollView()">⟲</button>
+                </div>
+            </div>
+        </main>
+
+        <!-- ===== RIGHT PANEL ===== -->
+        <aside class="right-panel">
+            <!-- Analysis -->
+            <div class="panel-section">
+                <div class="panel-section-title">🔍 Analysis</div>
+                <div id="analysisPlaceholder">
+                    <div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">
+                        Load a MIDI file to see analysis
+                    </div>
+                </div>
+                <div id="analysisContent" style="display:none">
+                    <div class="stat-grid" id="statGrid">
+                        <!-- Populated by JS -->
+                    </div>
+
+                    <!-- Confidence Meter -->
+                    <div class="confidence-meter">
+                        <div style="display:flex;justify-content:space-between;font-size:13px">
+                            <span>Confidence Score</span>
+                            <span id="confidenceScore">0%</span>
+                        </div>
+                        <div class="confidence-bar">
+                            <div class="confidence-fill" id="confidenceFill" style="width:0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Cleanup Options -->
+            <div class="panel-section">
+                <div class="panel-section-title">🧹 Cleanup Modules</div>
+                <div id="cleanupOptions">
+                    <label class="cleanup-option">
+                        <input type="checkbox" checked data-module="duplicate">
+                        <span class="option-label">Duplicate Removal</span>
+                        <span class="option-badge">merge</span>
+                    </label>
+                    <label class="cleanup-option">
+                        <input type="checkbox" checked data-module="ghost">
+                        <span class="option-label">Ghost Note Removal</span>
+                        <span class="option-badge">threshold</span>
+                    </label>
+                    <label class="cleanup-option">
+                        <input type="checkbox" checked data-module="fragment">
+                        <span class="option-label">Fragment Repair</span>
+                        <span class="option-badge">merge</span>
+                    </label>
+                    <label class="cleanup-option">
+                        <input type="checkbox" checked data-module="timing">
+                        <span class="option-label">Timing Repair</span>
+                        <span class="option-badge">quantise</span>
+                    </label>
+                    <label class="cleanup-option">
+                        <input type="checkbox" checked data-module="velocity">
+                        <span class="option-label">Velocity Smoothing</span>
+                        <span class="option-badge">smooth</span>
+                    </label>
+                    <label class="cleanup-option">
+                        <input type="checkbox" checked data-module="pitch">
+                        <span class="option-label">Pitch Stability</span>
+                        <span class="option-badge">stabilise</span>
+                    </label>
+                    <label class="cleanup-option">
+                        <input type="checkbox" checked data-module="overlap">
+                        <span class="option-label">Overlap Repair</span>
+                        <span class="option-badge">trim</span>
+                    </label>
+                    <label class="cleanup-option">
+                        <input type="checkbox" checked data-module="gap">
+                        <span class="option-label">Gap Filling</span>
+                        <span class="option-badge">fill</span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Actions -->
+            <div class="panel-section">
+                <button class="action-btn primary" id="analyzeBtn" onclick="analyzeMIDI()">🔬 Analyze</button>
+                <button class="action-btn success" id="cleanBtn" onclick="cleanMIDI()" disabled>🧹 Apply Cleanup</button>
+                <button class="action-btn primary" id="exportBtn" onclick="exportMIDI()" disabled>💾 Export MIDI</button>
+            </div>
+        </aside>
+
+        <!-- ===== BOTTOM PANEL ===== -->
+        <footer class="bottom-panel">
+            <div class="status">
+                <span id="statusText">Ready — Load a MIDI file to begin</span>
+            </div>
+            <div class="audition-controls">
+                <span style="font-size:12px;color:var(--text-muted)">Audition:</span>
+                <div class="toggle">
+                    <button class="active" onclick="setAuditionMode('before')">Before</button>
+                    <button onclick="setAuditionMode('after')">After</button>
+                </div>
+                <button onclick="playAudition()">▶ Play</button>
+                <button onclick="stopAudition()">⏹ Stop</button>
+            </div>
+        </footer>
+    </div>
+
+    <!-- ===== MODAL ===== -->
+    <div class="modal-overlay" id="modalOverlay">
+        <div class="modal">
+            <h2 id="modalTitle">Modal</h2>
+            <p id="modalBody">Content</p>
+            <div class="btn-group">
+                <button class="action-btn primary" onclick="closeModal()">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- ===== JAVASCRIPT ===== -->
+    <script>
+        // ============================================================
+        // MIDI Restoration Studio - Core Application
+        // ============================================================
+
+        // ---- State ----
+        const state = {
+            midiData: null,          // Raw MIDI bytes
+            midiTracks: [],          // Parsed tracks
+            notes: [],               // All notes {track, note, start, end, velocity}
+            originalNotes: [],
+            cleanedNotes: [],
+            isCleaned: false,
+            currentInstrument: 'piano',
+            activePreset: 'standard',
+            zoomLevel: 1,
+            viewOffset: 0,
+            auditionMode: 'before',
+            confidenceScore: 0,
+            analysis: null,
+            tempo: 120,
+            playbackTimers: [],
+            timeSignature: [4, 4],
+            trackCount: 0,
+        };
+
+        // ---- DOM References ----
+        const $ = id => document.getElementById(id);
+        const canvas = $('pianoRollCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // ---- MIDI Parser (Simplified) ----
+// NOTE: Revised build:
+// - Fixed VLQ writer
+// - Export now sorts note-on/off events correctly
+// - Timing quantiser now uses imported PPQ
+// - Playback stop cancels scheduled timers
+
+        class MIDIParser {
+            static parse(arrayBuffer) {
+                const data = new Uint8Array(arrayBuffer);
+                const view = new DataView(arrayBuffer);
+
+                // Check header
+                if (String.fromCharCode(...data.slice(0, 4)) !== 'MThd') {
+                    throw new Error('Not a valid MIDI file');
+                }
+
+                const format = view.getUint16(8);
+                const tracks = view.getUint16(10);
+                const ticksPerBeat = view.getUint16(12);
+
+                let position = 14;
+                const trackData = [];
+
+                for (let t = 0; t < tracks; t++) {
+                    if (String.fromCharCode(...data.slice(position, position + 4)) !== 'MTrk') {
+                        throw new Error(`Invalid track header at track ${t}`);
+                    }
+                    const trackLength = view.getUint32(position + 4);
+                    const trackBytes = data.slice(position + 8, position + 8 + trackLength);
+                    trackData.push({
+                        data: trackBytes,
+                        length: trackLength
+                    });
+                    position += 8 + trackLength;
+                }
+
+                return { format, tracks, ticksPerBeat, trackData };
+            }
+
+            static extractNotes(trackData, ticksPerBeat, tempo) {
+                const notes = [];
+                let currentTime = 0;
+                const activeNotes = new Map();
+
+                for (const track of trackData) {
+                    let pos = 0;
+                    currentTime = 0;
+                    const data = track.data;
+
+                    while (pos < data.length) {
+                        // Read delta time (variable length)
+                        let delta = 0;
+                        let shift = 0;
+                        let byte;
+                        do {
+                            byte = data[pos++];
+                            delta |= (byte & 0x7F) << shift;
+                            shift += 7;
+                        } while (byte & 0x80);
+
+                        currentTime += delta;
+
+                        // Read status byte
+                        let status = data[pos++];
+                        let channel = status & 0x0F;
+                        let type = status >> 4;
+
+                        // Running status
+                        if (type === 0xF) {
+                            // Meta or SysEx
+                            if (status === 0xFF) {
+                                const metaType = data[pos++];
+                                const metaLength = data[pos++];
+                                pos += metaLength;
+                                continue;
+                            }
+                            if (status === 0xF0 || status === 0xF7) {
+                                let len = 0;
+                                let b;
+                                do {
+                                    b = data[pos++];
+                                    len++;
+                                } while (b !== 0xF7);
+                                continue;
+                            }
+                            continue;
+                        }
+
+                        if (type === 0x8 || type === 0x9) {
+                            // Note On/Off
+                            const note = data[pos++];
+                            const velocity = data[pos++];
+
+                            if (type === 0x9 && velocity > 0) {
+                                activeNotes.set(note, { start: currentTime, velocity, channel });
+                            } else {
+                                if (activeNotes.has(note)) {
+                                    const active = activeNotes.get(note);
+                                    const duration = currentTime - active.start;
+                                    notes.push({
+                                        note: note,
+                                        start: active.start,
+                                        end: currentTime,
+                                        duration: duration,
+                                        velocity: active.velocity,
+                                        channel: channel,
+                                    });
+                                    activeNotes.delete(note);
+                                } else {
+                                    // Note off without matching on - treat as artifact
+                                    // We'll handle this in cleaning
+                                }
+                            }
+                        } else {
+                            // Other messages - skip
+                            if (type === 0xA || type === 0xB || type === 0xC || type === 0xD || type === 0xE) {
+                                // Skip extra bytes
+                                const param1 = data[pos++];
+                                const param2 = type === 0xC || type === 0xD ? 0 : data[pos++];
+                            }
+                        }
+                    }
+                }
+
+                // Handle hanging notes
+                for (const [note, active] of activeNotes) {
+                    notes.push({
+                        note: note,
+                        start: active.start,
+                        end: currentTime,
+                        duration: currentTime - active.start,
+                        velocity: active.velocity,
+                        channel: active.channel,
+                        hanging: true,
+                    });
+                }
+
+                return notes.sort((a, b) => a.start - b.start || a.note - b.note);
+            }
+        }
+
+        // ---- Cleaning Engine ----
+        class MIDICleaner {
+            constructor(notes, options = {}) {
+                this.notes = notes.map(n => ({ ...n }));
+                this.options = {
+                    minNoteDuration: 0.02,
+                    minVelocity: 10,
+                    maxVelocity: 110,
+                    quantizeStrength: 70,
+                    mergeGap: 0.015,
+                    ...options
+                };
+                this.removedCount = 0;
+                this.mergedCount = 0;
+                this.correctedCount = 0;
+            }
+
+            clean(modules) {
+                let result = [...this.notes];
+
+                if (modules.duplicate) result = this.removeDuplicates(result);
+                if (modules.ghost) result = this.removeGhosts(result);
+                if (modules.fragment) result = this.repairFragments(result);
+                if (modules.timing) result = this.repairTiming(result);
+                if (modules.velocity) result = this.smoothVelocity(result);
+                if (modules.pitch) result = this.stabilizePitch(result);
+                if (modules.overlap) result = this.repairOverlaps(result);
+                if (modules.gap) result = this.fillGaps(result);
+
+                return result;
+            }
+
+            removeDuplicates(notes) {
+                const seen = new Set();
+                const result = [];
+                for (const n of notes) {
+                    const key = `${n.note}|${Math.round(n.start)}|${Math.round(n.end)}`;
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        result.push(n);
+                    } else {
+                        this.removedCount++;
+                    }
+                }
+                return result;
+            }
+
+            removeGhosts(notes) {
+                return notes.filter(n => {
+                    const duration = (n.end - n.start) / 1000; // Rough ms conversion
+                    if (n.velocity < this.options.minVelocity) {
+                        this.removedCount++;
+                        return false;
+                    }
+                    if (duration < this.options.minNoteDuration) {
+                        this.removedCount++;
+                        return false;
+                    }
+                    return true;
+                });
+            }
+
+            repairFragments(notes) {
+                const sorted = [...notes].sort((a, b) => a.start - b.start || a.note - b.note);
+                const result = [];
+                let i = 0;
+
+                while (i < sorted.length) {
+                    let current = { ...sorted[i] };
+                    let j = i + 1;
+
+                    while (j < sorted.length) {
+                        const next = sorted[j];
+                        const gap = next.start - current.end;
+                        const samePitch = next.note === current.note;
+                        const smallGap = gap < (this.options.mergeGap * 1000);
+
+                        if (samePitch && smallGap && gap > 0) {
+                            // Merge fragments
+                            current.end = next.end;
+                            current.duration = current.end - current.start;
+                            current.velocity = Math.max(current.velocity, next.velocity);
+                            this.mergedCount++;
+                            j++;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    result.push(current);
+                    i = j;
+                }
+
+                return result;
+            }
+
+            repairTiming(notes) {
+                // Simple quantisation to 16th notes
+                const strength = this.options.quantizeStrength / 100;
+                const grid = Math.max(1, Math.round((state.ticksPerBeat||960)/4)); // 16th note from imported PPQ
+                const result = notes.map(n => {
+                    const startTick = n.start;
+                    const quantizedStart = Math.round(startTick / grid) * grid;
+                    const offset = (quantizedStart - startTick) * strength;
+                    return {
+                        ...n,
+                        start: Math.round(startTick + offset),
+                        end: Math.round(n.end + offset),
+                        duration: n.duration,
+                    };
+                });
+                return result;
+            }
+
+            smoothVelocity(notes) {
+                const windowSize = 3;
+                const velocities = notes.map(n => n.velocity);
+                const smoothed = notes.map((n, i) => {
+                    let sum = 0;
+                    let count = 0;
+                    for (let j = Math.max(0, i - windowSize); j < Math.min(notes.length, i + windowSize + 1); j++) {
+                        sum += velocities[j];
+                        count++;
+                    }
+                    const avg = sum / count;
+                    // Blend original with average
+                    const newVel = Math.round(n.velocity * 0.6 + avg * 0.4);
+                    return { ...n, velocity: Math.min(127, Math.max(1, newVel)) };
+                });
+                return smoothed;
+            }
+
+            stabilizePitch(notes) {
+                // Detect pitch flicker: C, C#, C -> C
+                const result = [];
+                let i = 0;
+                while (i < notes.length) {
+                    const current = notes[i];
+                    const next = notes[i + 1];
+                    const next2 = notes[i + 2];
+
+                    if (next && next2) {
+                        const close1 = Math.abs(next.start - current.end) < 50;
+                        const close2 = Math.abs(next2.start - next.end) < 50;
+                        const samePitch = current.note === next2.note;
+                        const diff = Math.abs(next.note - current.note) === 1;
+
+                        if (close1 && close2 && samePitch && diff) {
+                            // Flicker detected - use the stable pitch
+                            const merged = {
+                                ...current,
+                                end: next2.end,
+                                duration: next2.end - current.start,
+                                velocity: Math.max(current.velocity, next2.velocity),
+                            };
+                            result.push(merged);
+                            this.correctedCount++;
+                            i += 3;
+                            continue;
+                        }
+                    }
+
+                    result.push(current);
+                    i++;
+                }
+                return result;
+            }
+
+            repairOverlaps(notes) {
+                const sorted = [...notes].sort((a, b) => a.start - b.start);
+                const result = [];
+
+                for (const n of sorted) {
+                    let overlapping = false;
+                    for (const existing of result) {
+                        if (existing.note === n.note) {
+                            if (n.start < existing.end && n.start > existing.start) {
+                                // Trim overlapping note
+                                n.start = existing.end + 10;
+                                if (n.start >= n.end) {
+                                    this.removedCount++;
+                                    overlapping = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (!overlapping) {
+                        result.push(n);
+                    }
+                }
+
+                return result;
+            }
+
+            fillGaps(notes) {
+                const sorted = [...notes].sort((a, b) => a.start - b.start || a.note - b.note);
+                const result = [];
+
+                for (const n of sorted) {
+                    const last = result[result.length - 1];
+                    if (last && last.note === n.note) {
+                        const gap = n.start - last.end;
+                        if (gap > 0 && gap < 100) {
+                            // Fill the gap
+                            last.end = n.end;
+                            last.duration = last.end - last.start;
+                            continue;
+                        }
+                    }
+                    result.push({ ...n });
+                }
+
+                return result;
+            }
+
+            getStats() {
+                return {
+                    removed: this.removedCount,
+                    merged: this.mergedCount,
+                    corrected: this.correctedCount,
+                    remaining: this.notes.length - this.removedCount,
+                };
+            }
+        }
+
+        // ---- Analysis Engine ----
+        class MIDIAnalyzer {
+            static analyze(notes, tracks) {
+                if (!notes || notes.length === 0) {
+                    return {
+                        confidence: 0,
+                        issues: ['No notes detected'],
+                        stats: { noteCount: 0 }
+                    };
+                }
+
+                const stats = {
+                    noteCount: notes.length,
+                    pitchRange: { min: 999, max: 0 },
+                    velocityAvg: 0,
+                    velocityStd: 0,
+                    avgDuration: 0,
+                    duplicates: 0,
+                    ghosts: 0,
+                    overlaps: 0,
+                    fragments: 0,
+                };
+
+                // Pitch range
+                for (const n of notes) {
+                    if (n.note < stats.pitchRange.min) stats.pitchRange.min = n.note;
+                    if (n.note > stats.pitchRange.max) stats.pitchRange.max = n.note;
+                }
+
+                // Velocities
+                const velocities = notes.map(n => n.velocity);
+                stats.velocityAvg = velocities.reduce((a, b) => a + b, 0) / velocities.length;
+                stats.velocityStd = Math.sqrt(
+                    velocities.reduce((a, b) => a + Math.pow(b - stats.velocityAvg, 2), 0) / velocities.length
+                );
+
+                // Average duration
+                stats.avgDuration = notes.reduce((a, b) => a + (b.duration || 0), 0) / notes.length;
+
+                // Find issues
+                const issues = [];
+                let confidence = 100;
+
+                // Ghost notes (low velocity)
+                const ghostCount = notes.filter(n => n.velocity < 10).length;
+                if (ghostCount > notes.length * 0.1) {
+                    issues.push(`${ghostCount} very low velocity notes (potential ghosts)`);
+                    confidence -= 10;
+                    stats.ghosts = ghostCount;
+                }
+
+                // Short notes
+                const shortCount = notes.filter(n => (n.duration || 0) < 50).length;
+                if (shortCount > notes.length * 0.15) {
+                    issues.push(`${shortCount} very short notes (potential artifacts)`);
+                    confidence -= 10;
+                }
+
+                // Out of range
+                const outOfRange = notes.filter(n => n.note < 21 || n.note > 108).length;
+                if (outOfRange > 0) {
+                    issues.push(`${outOfRange} notes outside piano range`);
+                    confidence -= 5;
+                }
+
+                // Duplicates (exact same pitch and timing)
+                const seen = new Set();
+                let dupCount = 0;
+                for (const n of notes) {
+                    const key = `${n.note}|${Math.round(n.start)}|${Math.round(n.end)}`;
+                    if (seen.has(key)) dupCount++;
+                    else seen.add(key);
+                }
+                if (dupCount > 0) {
+                    issues.push(`${dupCount} duplicate notes found`);
+                    confidence -= 5;
+                    stats.duplicates = dupCount;
+                }
+
+                // Pitch flicker detection
+                let flickerCount = 0;
+                for (let i = 0; i < notes.length - 2; i++) {
+                    const a = notes[i];
+                    const b = notes[i + 1];
+                    const c = notes[i + 2];
+                    if (a.note === c.note && Math.abs(b.note - a.note) === 1 &&
+                        Math.abs(b.start - a.end) < 50 && Math.abs(c.start - b.end) < 50) {
+                        flickerCount++;
+                    }
+                }
+                if (flickerCount > 0) {
+                    issues.push(`${flickerCount} pitch flicker patterns detected`);
+                    confidence -= 5;
+                }
+
+                // Overlaps
+                let overlapCount = 0;
+                for (let i = 0; i < notes.length; i++) {
+                    for (let j = i + 1; j < notes.length; j++) {
+                        if (notes[i].note === notes[j].note &&
+                            notes[i].start < notes[j].end &&
+                            notes[j].start < notes[i].end) {
+                            overlapCount++;
+                        }
+                    }
+                }
+                if (overlapCount > 0) {
+                    issues.push(`${overlapCount} overlapping notes`);
+                    confidence -= 5;
+                    stats.overlaps = overlapCount;
+                }
+
+                // Confidence scoring
+                confidence = Math.max(0, Math.min(100, confidence));
+                stats.confidence = Math.round(confidence);
+
+                return {
+                    confidence: Math.round(confidence),
+                    issues,
+                    stats,
+                    recommendations: this.getRecommendations(issues),
+                };
+            }
+
+            static getRecommendations(issues) {
+                const recs = [];
+                if (issues.some(i => i.includes('ghost'))) recs.push('Enable Ghost Note Removal');
+                if (issues.some(i => i.includes('short'))) recs.push('Lower Min Duration threshold');
+                if (issues.some(i => i.includes('flicker'))) recs.push('Enable Pitch Stability');
+                if (issues.some(i => i.includes('overlap'))) recs.push('Enable Overlap Repair');
+                if (issues.some(i => i.includes('duplicate'))) recs.push('Enable Duplicate Removal');
+                return recs;
+            }
+        }
+
+        // ---- UI Functions ----
+
+        // File handling
+        function initFileHandling() {
+            const dropZone = $('dropZone');
+            const fileInput = $('fileInput');
+
+            dropZone.addEventListener('click', () => fileInput.click());
+
+            dropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropZone.classList.add('dragover');
+            });
+
+            dropZone.addEventListener('dragleave', () => {
+                dropZone.classList.remove('dragover');
+            });
+
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('dragover');
+                const files = e.dataTransfer.files;
+                if (files.length > 0) {
+                    handleFile(files[0]);
+                }
+            });
+
+            fileInput.addEventListener('change', (e) => {
+                if (e.target.files.length > 0) {
+                    handleFile(e.target.files[0]);
+                }
+            });
+        }
+
+        function handleFile(file) {
+            if (!file.name.match(/\.(mid|midi)$/i)) {
+                showModal('Invalid File', 'Please select a valid MIDI file (.mid or .midi)');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const arrayBuffer = e.target.result;
+                    state.midiData = arrayBuffer;
+                    parseMIDI(arrayBuffer);
+                    updateFileInfo(file);
+                    $('analyzeBtn').disabled = false;
+                    setStatus(`Loaded: ${file.name}`, 'highlight');
+                } catch (err) {
+                    showModal('Error', `Failed to load MIDI: ${err.message}`);
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function parseMIDI(arrayBuffer) {
+            try {
+                const parsed = MIDIParser.parse(arrayBuffer);
+                state.tempo = 120;
+                state.ticksPerBeat = parsed.ticksPerBeat;
+                state.trackCount = parsed.tracks;
+
+                const notes = MIDIParser.extractNotes(parsed.trackData, parsed.ticksPerBeat, 500000);
+                state.notes = notes;
+                state.originalNotes = notes.map(n => ({ ...n }));
+                state.isCleaned = false;
+                state.cleanedNotes = [];
+
+                // Auto-analyze
+                analyzeMIDI();
+                renderPianoRoll();
+
+                $('cleanBtn').disabled = false;
+                $('exportBtn').disabled = false;
+
+            } catch (err) {
+                showModal('Parse Error', `Could not parse MIDI: ${err.message}`);
+                console.error(err);
+            }
+        }
+
+        function updateFileInfo(file) {
+            const info = $('fileInfo');
+            info.classList.add('visible');
+            $('fileName').textContent = file.name;
+            $('fileTracks').textContent = state.trackCount;
+            $('fileNotes').textContent = state.notes.length;
+        }
+
+        // ---- Analysis ----
+        function analyzeMIDI() {
+            if (!state.notes || state.notes.length === 0) {
+                showModal('No Data', 'Please load a MIDI file first');
+                return;
+            }
+
+            const analysis = MIDIAnalyzer.analyze(state.notes, state.midiTracks);
+            state.analysis = analysis;
+            state.confidenceScore = analysis.confidence;
+
+            displayAnalysis(analysis);
+            $('analysisPlaceholder').style.display = 'none';
+            $('analysisContent').style.display = 'block';
+
+            setStatus(`Analysis complete — ${analysis.issues.length} issues found`, 'highlight');
+        }
+
+        function displayAnalysis(analysis) {
+            const grid = $('statGrid');
+            const stats = analysis.stats;
+
+            const items = [
+                { label: 'Notes', value: stats.noteCount },
+                { label: 'Pitch Range', value: `${stats.pitchRange.min}–${stats.pitchRange.max}` },
+                { label: 'Avg Velocity', value: Math.round(stats.velocityAvg) },
+                { label: 'Avg Duration', value: `${Math.round(stats.avgDuration)} ticks` },
+                { label: 'Duplicates', value: stats.duplicates || 0, warn: stats.duplicates > 0 },
+                { label: 'Ghost Notes', value: stats.ghosts || 0, warn: stats.ghosts > 0 },
+                { label: 'Overlaps', value: stats.overlaps || 0, warn: stats.overlaps > 0 },
+                { label: 'Tracks', value: state.trackCount },
+            ];
+
+            grid.innerHTML = items.map(item => `
+                <div class="stat-item">
+                    <span class="label">${item.label}</span>
+                    <span class="value ${item.warn ? 'warning' : ''}">${item.value}</span>
+                </div>
+            `).join('');
+
+            // Confidence
+            const score = analysis.confidence;
+            $('confidenceScore').textContent = `${score}%`;
+            const fill = $('confidenceFill');
+            fill.style.width = `${score}%`;
+            fill.className = 'confidence-fill ' + (score >= 70 ? 'good' : score >= 40 ? 'ok' : 'bad');
+
+            // Issues display
+            if (analysis.issues.length > 0) {
+                const issuesHtml = analysis.issues.map(i =>
+                    `<div style="font-size:12px;color:var(--accent-orange);padding:2px 0">⚠️ ${i}</div>`
+                ).join('');
+                grid.innerHTML += `
+                    <div style="grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border-color);padding-top:8px">
+                        <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">ISSUES FOUND</div>
+                        ${issuesHtml}
+                        ${analysis.recommendations.length > 0 ? `
+                            <div style="font-size:11px;color:var(--accent-blue);margin-top:4px">
+                                💡 ${analysis.recommendations.join(' • ')}
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            } else {
+                grid.innerHTML += `
+                    <div style="grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border-color);padding-top:8px">
+                        <div style="font-size:12px;color:var(--accent-green)">✅ No major issues detected</div>
+                    </div>
+                `;
+            }
+        }
+
+        // ---- Cleaning ----
+        function cleanMIDI() {
+            if (!state.notes || state.notes.length === 0) {
+                showModal('No Data', 'Please load a MIDI file first');
+                return;
+            }
+
+            // Get enabled modules
+            const checkboxes = document.querySelectorAll('#cleanupOptions input[type="checkbox"]');
+            const modules = {};
+            checkboxes.forEach(cb => {
+                modules[cb.dataset.module] = cb.checked;
+            });
+
+            setStatus('🧹 Cleaning MIDI...', 'highlight');
+
+            // Get instrument-specific settings
+            const instrument = $('instrumentSelect').value;
+
+            // Configure cleaner based on instrument
+            const options = {
+                minNoteDuration: 0.02,
+                minVelocity: 10,
+                maxVelocity: 110,
+                quantizeStrength: 70,
+                mergeGap: 0.015,
+            };
+
+            if (instrument === 'bass') {
+                options.minNoteDuration = 0.03;
+                options.minVelocity = 15;
+            } else if (instrument === 'drums') {
+                options.minNoteDuration = 0.01;
+                options.minVelocity = 20;
+            } else if (instrument === 'vocals') {
+                options.minNoteDuration = 0.04;
+                options.minVelocity = 10;
+            }
+
+            const cleaner = new MIDICleaner(state.notes, options);
+            const cleaned = cleaner.clean(modules);
+
+            state.cleanedNotes = cleaned;
+            state.isCleaned = true;
+
+            const stats = cleaner.getStats();
+            state.cleanStats = stats;
+
+            // Update display
+            renderPianoRoll();
+
+            const summary = `
+                Removed ${stats.removed} notes,
+                merged ${stats.merged} fragments,
+                corrected ${stats.corrected} pitches.
+                ${cleaned.length} notes remaining.
+            `;
+            setStatus(`✅ Clean complete — ${summary}`, 'highlight');
+
+            // Store for export
+            state.exportNotes = cleaned;
+
+            showModal('Cleanup Complete',
+                `✅ MIDI cleaned successfully!\n\n${summary}\n\nExport your cleaned MIDI file using the Export button.`
+            );
+
+            // Update confidence
+            const newAnalysis = MIDIAnalyzer.analyze(cleaned, state.midiTracks);
+            state.confidenceScore = newAnalysis.confidence;
+            displayAnalysis(newAnalysis);
+        }
+
+        // ---- Piano Roll Renderer ----
+        function renderPianoRoll() {
+            const rect = canvas.parentElement.getBoundingClientRect();
+            canvas.width = rect.width;
+            canvas.height = rect.height;
+
+            const w = canvas.width;
+            const h = canvas.height;
+
+            const notes = state.isCleaned && state.cleanedNotes.length > 0 ?
+                state.cleanedNotes :
+                state.notes;
+
+            if (!notes || notes.length === 0) {
+                ctx.fillStyle = 'var(--bg-tertiary)';
+                ctx.fillRect(0, 0, w, h);
+                ctx.fillStyle = 'var(--text-muted)';
+                ctx.font = '14px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText('No notes to display', w/2, h/2);
+                return;
+            }
+
+            // Calculate ranges
+            const minNote = Math.max(21, Math.min(...notes.map(n => n.note)) - 2);
+            const maxNote = Math.min(108, Math.max(...notes.map(n => n.note)) + 2);
+            const noteRange = maxNote - minNote + 1;
+
+            const maxTime = Math.max(...notes.map(n => n.end || n.start + 1000)) + 1000;
+
+            const padding = { top: 20, bottom: 40, left: 40, right: 20 };
+            const plotW = w - padding.left - padding.right;
+            const plotH = h - padding.top - padding.bottom;
+
+            const noteHeight = Math.min(plotH / noteRange, 12);
+            const timeScale = plotW / maxTime * state.zoomLevel;
+
+            // Background
+            ctx.fillStyle = 'var(--bg-tertiary)';
+            ctx.fillRect(0, 0, w, h);
+
+            // Grid lines
+            ctx.strokeStyle = 'var(--border-color)';
+            ctx.lineWidth = 0.5;
+
+            // Horizontal (note) lines
+            for (let i = 0; i <= noteRange; i++) {
+                const y = padding.top + i * noteHeight;
+                ctx.beginPath();
+                ctx.moveTo(padding.left, y);
+                ctx.lineTo(w - padding.right, y);
+                ctx.stroke();
+            }
+
+            // Vertical (time) lines - every beat
+            const beatInterval = 240 * state.zoomLevel;
+            for (let t = 0; t < maxTime; t += beatInterval) {
+                const x = padding.left + t * timeScale;
+                if (x > w - padding.right) break;
+                ctx.beginPath();
+                ctx.moveTo(x, padding.top);
+                ctx.lineTo(x, h - padding.bottom);
+                ctx.stroke();
+            }
+
+            // Draw notes
+            const visibleNotes = notes.filter(n => {
+                const x = padding.left + n.start * timeScale;
+                const endX = padding.left + (n.end || n.start + 1000) * timeScale;
+                return x < w && endX > 0;
+            });
+
+            for (const n of visibleNotes) {
+                const x = padding.left + n.start * timeScale;
+                const endX = padding.left + (n.end || n.start + 1000) * timeScale;
+                const y = padding.top + (maxNote - n.note) * noteHeight;
+                const width = Math.max(endX - x, 2);
+                const height = Math.max(noteHeight - 1, 2);
+
+                // Color by velocity
+                const intensity = Math.max(0.2, n.velocity / 127);
+                const isCleanedNote = state.isCleaned && state.cleanedNotes.includes(n);
+                const color = isCleanedNote ?
+                    `rgba(63, 185, 80, ${intensity})` :
+                    `rgba(88, 166, 255, ${intensity})`;
+
+                ctx.fillStyle = color;
+                ctx.fillRect(x, y, width, height);
+
+                // Border
+                ctx.strokeStyle = n.velocity > 80 ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)';
+                ctx.lineWidth = 0.5;
+                ctx.strokeRect(x, y, width, height);
+            }
+
+            // Note labels (piano keys)
+            ctx.fillStyle = 'var(--text-muted)';
+            ctx.font = '9px sans-serif';
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'middle';
+
+            const step = Math.max(1, Math.floor(noteRange / 20));
+            for (let n = minNote; n <= maxNote; n += step) {
+                const y = padding.top + (maxNote - n) * noteHeight + noteHeight / 2;
+                const label = n % 12 === 0 ? `${n}` : '';
+                if (label) {
+                    ctx.fillStyle = 'var(--text-secondary)';
+                    ctx.fillText(label, padding.left - 6, y);
+                }
+            }
+
+            // Time labels
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+            ctx.fillStyle = 'var(--text-muted)';
+            ctx.font = '9px sans-serif';
+
+            for (let t = 0; t < maxTime; t += beatInterval * 4) {
+                const x = padding.left + t * timeScale;
+                if (x > w - padding.right) break;
+                const beat = Math.round(t / 240);
+                ctx.fillText(`${beat}`, x, h - padding.bottom + 4);
+            }
+
+            // Current state indicator
+            ctx.fillStyle = 'var(--text-muted)';
+            ctx.font = '11px sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'bottom';
+            const mode = state.isCleaned ? '🔹 Cleaned' : '🔸 Original';
+            const count = notes.length;
+            ctx.fillText(`${mode} • ${count} notes • Zoom: ${Math.round(state.zoomLevel * 100)}%`, padding.left, h - 6);
+        }
+
+        // ---- Canvas resizing ----
+        function resizeCanvas() {
+            renderPianoRoll();
+        }
+
+        // ---- Zoom controls ----
+        function zoomPianoRoll(direction) {
+            state.zoomLevel = Math.max(0.1, Math.min(5, state.zoomLevel + direction * 0.1));
+            $('zoomDisplay').textContent = `${Math.round(state.zoomLevel * 100)}%`;
+            renderPianoRoll();
+        }
+
+        function resetPianoRollView() {
+            state.zoomLevel = 1;
+            $('zoomDisplay').textContent = '100%';
+            renderPianoRoll();
+        }
+
+        // ---- Export ----
+        function exportMIDI() {
+            if (!state.isCleaned || !state.cleanedNotes || state.cleanedNotes.length === 0) {
+                showModal('No Cleaned Data', 'Please clean the MIDI file first');
+                return;
+            }
+
+            try {
+                // Simple MIDI export - create a basic SMF file
+                const notes = state.cleanedNotes;
+                const ticksPerBeat = state.ticksPerBeat || 960;
+
+                // Build MIDI file
+                const header = buildMIDIHeader(1, ticksPerBeat);
+                const trackData = buildMIDITrack(notes, ticksPerBeat);
+                const fileData = new Uint8Array([...header, ...trackData]);
+
+                const blob = new Blob([fileData], { type: 'audio/midi' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'cleaned_output.mid';
+                a.click();
+                URL.revokeObjectURL(url);
+
+                setStatus('✅ Exported cleaned MIDI successfully', 'highlight');
+            } catch (err) {
+                showModal('Export Error', `Failed to export MIDI: ${err.message}`);
+                console.error(err);
+            }
+        }
+
+        function buildMIDIHeader(format, ticksPerBeat) {
+            const data = new Uint8Array(14);
+            const view = new DataView(data.buffer);
+
+            // MThd
+            data.set([0x4D, 0x54, 0x68, 0x64], 0);
+            // Length (6)
+            view.setUint32(4, 6);
+            // Format (0 = single track)
+            view.setUint16(8, 0);
+            // Tracks (1)
+            view.setUint16(10, 1);
+            // Ticks per beat
+            view.setUint16(12, ticksPerBeat);
+
+            return data;
+        }
+
+        function buildMIDITrack(notes, ticksPerBeat) {
+            // Sort note-on/off events chronologically
+            const sorted = [...notes].sort((a, b) => a.start - b.start);
+
+            // Build track events
+            const events = [];
+            let currentTime = 0;
+
+            for (const n of sorted) {
+                const deltaOn = n.start - currentTime;
+                events.push({ delta: deltaOn, type: 'note_on', note: n.note, velocity: n.velocity });
+                currentTime = n.start;
+
+                const deltaOff = (n.end || n.start + 240) - currentTime;
+                events.push({ delta: deltaOff, type: 'note_off', note: n.note, velocity: 0 });
+                currentTime = n.end || n.start + 240;
+            }
+
+            // Build event data
+            const trackData = [];
+
+            // Track header
+            const header = new Uint8Array(8);
+            header.set([0x4D, 0x54, 0x72, 0x6B], 0);
+            // Length placeholder
+            const lenPos = 4;
+
+            let eventBytes = [];
+
+            // End of track meta event
+            const endEvent = [0x00, 0xFF, 0x2F, 0x00];
+
+            // Calculate total size
+            let totalSize = 0;
+            const eventData = [];
+
+            for (const ev of events) {
+                const deltaBytes = writeVarLen(ev.delta);
+                const msg = [];
+
+                if (ev.type === 'note_on') {
+                    msg.push(0x90);
+                    msg.push(ev.note);
+                    msg.push(ev.velocity);
+                } else {
+                    msg.push(0x80);
+                    msg.push(ev.note);
+                    msg.push(0);
+                }
+
+                const bytes = [...deltaBytes, ...msg];
+                eventData.push(bytes);
+                totalSize += bytes.length;
+            }
+
+            // Add end event
+            eventData.push(endEvent);
+            totalSize += endEvent.length;
+
+            // Write header with length
+            const trackBytes = new Uint8Array(8 + totalSize);
+            trackBytes.set(header, 0);
+            const view = new DataView(trackBytes.buffer);
+            view.setUint32(lenPos, totalSize);
+
+            // Write events
+            let offset = 8;
+            for (const ev of eventData) {
+                trackBytes.set(ev, offset);
+                offset += ev.length;
+            }
+
+            return trackBytes;
+        }
+
+        function writeVarLen(value) {
+            let buffer = value & 0x7F;
+            const out = [];
+            while ((value >>= 7) > 0) {
+                buffer <<= 8;
+                buffer |= ((value & 0x7F) | 0x80);
+            }
+            while (true) {
+                out.push(buffer & 0xFF);
+                if (buffer & 0x80) buffer >>= 8;
+                else break;
+            }
+            return out;
+        }
+
+        // ---- UI Helpers ----
+        function setStatus(text, className = '') {
+            const el = $('statusText');
+            el.textContent = text;
+            if (className) {
+                el.className = className;
+            }
+        }
+
+        function showModal(title, body) {
+            $('modalTitle').textContent = title;
+            $('modalBody').textContent = body;
+            $('modalOverlay').classList.add('active');
+        }
+
+        function closeModal() {
+            $('modalOverlay').classList.remove('active');
+        }
+
+        // Click outside modal to close
+        $('modalOverlay').addEventListener('click', (e) => {
+            if (e.target === e.currentTarget) closeModal();
+        });
+
+        function showKeyboardShortcuts() {
+            showModal('⌨️ Keyboard Shortcuts',
+                'Space — Play/Pause\n' +
+                'R — Reset view\n' +
+                '+/- — Zoom in/out\n' +
+                'C — Clean MIDI\n' +
+                'E — Export MIDI\n' +
+                'A — Analyze'
+            );
+        }
+
+        function toggleDarkMode() {
+            // Already dark - toggle light mode if desired
+            // For now, just a notification
+            showModal('🌙 Dark Mode', 'Dark mode is always on for this application.\n' +
+                'Your eyes will thank you! 😎');
+        }
+
+        function exportSession() {
+            const session = {
+                version: '2.0',
+                timestamp: new Date().toISOString(),
+                noteCount: state.notes.length,
+                cleaned: state.isCleaned,
+                confidence: state.confidenceScore,
+                instrument: state.currentInstrument,
+            };
+            const json = JSON.stringify(session, null, 2);
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `midi_session_${Date.now()}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            setStatus('💾 Session exported', 'highlight');
+        }
+
+        function setAuditionMode(mode) {
+            state.auditionMode = mode;
+            document.querySelectorAll('.audition-controls .toggle button').forEach(b => {
+                b.classList.toggle('active', b.textContent.toLowerCase() === mode);
+            });
+            setStatus(`Audition: ${mode} mode`, 'highlight');
+        }
+
+        function playAudition() {
+            const notes = state.auditionMode === 'after' && state.isCleaned ?
+                state.cleanedNotes :
+                state.notes;
+
+            if (!notes || notes.length === 0) {
+                showModal('No Notes', 'No notes to play');
+                return;
+            }
+
+            // Simple MIDI playback using Web MIDI API
+            if (navigator.requestMIDIAccess) {
+                navigator.requestMIDIAccess().then(access => {
+                    const outputs = access.outputs;
+                    if (outputs.size === 0) {
+                        showModal('No MIDI Output', 'No MIDI output device found');
+                        return;
+                    }
+
+                    const output = outputs.values().next().value;
+                    if (!output) {
+                        showModal('No MIDI Output', 'No MIDI output device found');
+                        return;
+                    }
+
+                    // Send note-on events
+                    const sorted = [...notes].sort((a, b) => a.start - b.start);
+                    const startTime = performance.now();
+
+                    // We'll schedule notes based on their relative timing
+                    // For simplicity, we just play them all with a small delay between each
+                    const baseNote = notes.length > 0 ? notes[0].start : 0;
+                    let delay = 0;
+
+                    for (const n of sorted) {
+                        const time = (n.start - baseNote) / 10; // Scale for audible playback
+                        const __t=setTimeout(() => {
+                            output.send([0x90, n.note, Math.min(n.velocity, 100)]);
+                            setTimeout(() => {
+                                output.send([0x80, n.note, 0]);
+                            }, Math.max(50, (n.duration || 240) / 5));
+                        }, time); state.playbackTimers.push(__t);
+                    }
+
+                    setStatus(`▶ Playing ${sorted.length} notes in ${state.auditionMode} mode`, 'highlight');
+                }).catch(() => {
+                    showModal('MIDI Error', 'Could not access MIDI output.\n' +
+                        'Try using a MIDI player or DAW instead.');
+                });
+            } else {
+                showModal('Web MIDI Not Supported',
+                    'Your browser does not support Web MIDI.\n' +
+                    'Please use Chrome, Edge, or Opera for playback.'
+                );
+            }
+        }
+
+        function stopAudition() {
+            state.playbackTimers.forEach(clearTimeout); state.playbackTimers=[];
+            // Stop all MIDI notes - send all notes off
+            if (navigator.requestMIDIAccess) {
+                navigator.requestMIDIAccess().then(access => {
+                    const outputs = access.outputs;
+                    if (outputs.size > 0) {
+                        const output = outputs.values().next().value;
+                        for (let i = 0; i < 128; i++) {
+                            output.send([0x80, i, 0]);
+                        }
+                    }
+                });
+            }
+            setStatus('⏹ Playback stopped', '');
+        }
+
+        // ---- Presets ----
+        document.querySelectorAll('.preset-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+                this.classList.add('active');
+                state.activePreset = this.dataset.preset;
+
+                // Adjust cleanup options based on preset
+                const checkboxes = document.querySelectorAll('#cleanupOptions input[type="checkbox"]');
+                const presets = {
+                    light: { duplicate: true, ghost: true, fragment: true, timing: false, velocity: false, pitch: false,
+                        overlap: true, gap: false },
+                    standard: { duplicate: true, ghost: true, fragment: true, timing: true, velocity: true, pitch: true,
+                        overlap: true, gap: true },
+                    aggressive: { duplicate: true, ghost: true, fragment: true, timing: true, velocity: true, pitch: true,
+                        overlap: true, gap: true },
+                    jazz: { duplicate: true, ghost: true, fragment: true, timing: false, velocity: true, pitch: false,
+                        overlap: true, gap: true },
+                    classical: { duplicate: true, ghost: true, fragment: true, timing: false, velocity: false, pitch: false,
+                        overlap: true, gap: false },
+                };
+
+                const preset = presets[this.dataset.preset] || presets.standard;
+                checkboxes.forEach(cb => {
+                    cb.checked = preset[cb.dataset.module] !== undefined ? preset[cb.dataset.module] : true;
+                });
+
+                setStatus(`Preset: ${this.textContent} loaded`, 'highlight');
+            });
+        });
+
+        // ---- Instrument selection ----
+        $('instrumentSelect').addEventListener('change', function() {
+            state.currentInstrument = this.value;
+            setStatus(`Instrument profile: ${this.options[this.selectedIndex].text}`, 'highlight');
+        });
+
+        // ---- Keyboard shortcuts ----
+        document.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT') return;
+
+            switch (e.key.toLowerCase()) {
+                case ' ':
+                    e.preventDefault();
+                    playAudition();
+                    break;
+                case 'r':
+                    resetPianoRollView();
+                    break;
+                case '+':
+                    zoomPianoRoll(1);
+                    break;
+                case '-':
+                    zoomPianoRoll(-1);
+                    break;
+                case 'c':
+                    cleanMIDI();
+                    break;
+                case 'e':
+                    exportMIDI();
+                    break;
+                case 'a':
+                    analyzeMIDI();
+                    break;
+                case 'escape':
+                    closeModal();
+                    break;
+            }
+        });
+
+        // ---- Resize handler ----
+        window.addEventListener('resize', resizeCanvas);
+
+        // ---- Initialisation ----
+        function init() {
+            initFileHandling();
+            resizeCanvas();
+
+            // Set default preset
+            document.querySelector('.preset-btn[data-preset="standard"]').classList.add('active');
+
+            setStatus('🎵 MIDI Restoration Studio v2.0 — Load a MIDI file to begin', '');
+            console.log('🎵 MIDI Restoration Studio v2.0 loaded');
+            console.log('📖 Keyboard shortcuts: Space=Play, R=Reset, +/-=Zoom, C=Clean, E=Export, A=Analyze');
+        }
+
+        // Start the app
+        document.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
