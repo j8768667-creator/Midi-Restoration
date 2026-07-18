@@ -600,7 +600,7 @@
         <!-- ===== HEADER ===== -->
         <header class="header">
             <div class="header-left">
-                <div class="logo">🎵 MIDI Restoration <span>Studio v2.0</span></div>
+                <div class="logo">🎵 MIDI Restoration <span>Studio v2.4</span></div>
             </div>
             <div class="header-actions">
                 <button class="btn-icon" onclick="showKeyboardShortcuts()">⌨️</button>
@@ -627,6 +627,27 @@
                         <span id="fileTracks">0 tracks</span> • <span id="fileNotes">0 notes</span>
                     </div>
                 </div>
+            </div>
+
+            <!-- Audio Reference -->
+            <div class="panel-section">
+                <div class="panel-section-title">🎧 Original Audio Reference</div>
+                <div class="drop-zone" id="audioDropZone" style="padding:16px 12px">
+                    <div class="drop-zone-icon" style="font-size:24px">🎵</div>
+                    <div class="drop-zone-text"><strong>Drop WAV/audio</strong> or click to browse</div>
+                    <input type="file" id="audioFileInput" accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.flac" style="display:none">
+                </div>
+                <div class="file-info" id="audioFileInfo">
+                    <div class="name" id="audioFileName">Reference.wav</div>
+                    <div style="font-size:12px;color:var(--text-muted);margin-top:4px">
+                        <span id="audioDuration">0.0 s</span> • <span id="audioOnsets">0 attacks</span>
+                    </div>
+                </div>
+                <label class="cleanup-option" style="margin-top:8px">
+                    <input type="checkbox" id="audioGuideEnabled" checked disabled>
+                    <span class="option-label">Use WAV-guided restoration</span>
+                    <span class="option-badge">safe</span>
+                </label>
             </div>
 
             <!-- Instrument Profile -->
@@ -815,6 +836,9 @@
             playbackTimers: [],
             timeSignature: [4, 4],
             trackCount: 0,
+            audioBuffer: null,
+            audioAnalysis: null,
+            audioFileName: '',
         };
 
         // ---- DOM References ----
@@ -1444,6 +1468,131 @@
             $('fileNotes').textContent = state.notes.length;
         }
 
+
+        // ---- Audio Reference Analysis ----
+        function initAudioHandling() {
+            const zone = $('audioDropZone');
+            const input = $('audioFileInput');
+            if (!zone || !input) return;
+            zone.addEventListener('click', () => input.click());
+            zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+            zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+            zone.addEventListener('drop', e => {
+                e.preventDefault(); zone.classList.remove('dragover');
+                if (e.dataTransfer.files.length) handleAudioFile(e.dataTransfer.files[0]);
+            });
+            input.addEventListener('change', e => {
+                if (e.target.files.length) handleAudioFile(e.target.files[0]);
+            });
+        }
+
+        async function handleAudioFile(file) {
+            try {
+                setStatus(`Analysing audio reference: ${file.name}…`, 'highlight');
+                const arrayBuffer = await file.arrayBuffer();
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (!AudioCtx) throw new Error('Web Audio is not supported by this browser');
+                const ac = new AudioCtx();
+                const decoded = await ac.decodeAudioData(arrayBuffer.slice(0));
+                state.audioBuffer = decoded;
+                state.audioFileName = file.name;
+                state.audioAnalysis = analyseReferenceAudio(decoded);
+                await ac.close();
+                $('audioFileInfo').classList.add('visible');
+                $('audioFileName').textContent = file.name;
+                $('audioDuration').textContent = `${decoded.duration.toFixed(2)} s`;
+                $('audioOnsets').textContent = `${state.audioAnalysis.onsets.length} attacks`;
+                $('audioGuideEnabled').disabled = false;
+                $('audioGuideEnabled').checked = true;
+                setStatus(`Audio reference ready — ${state.audioAnalysis.onsets.length} attacks detected`, 'highlight');
+            } catch (err) {
+                state.audioBuffer = null;
+                state.audioAnalysis = null;
+                $('audioGuideEnabled').disabled = true;
+                showModal('Audio Error', `Could not analyse the audio reference: ${err.message}`);
+            }
+        }
+
+        function analyseReferenceAudio(buffer) {
+            const sr = buffer.sampleRate;
+            const length = buffer.length;
+            const mono = new Float32Array(length);
+            for (let c = 0; c < buffer.numberOfChannels; c++) {
+                const ch = buffer.getChannelData(c);
+                for (let i = 0; i < length; i++) mono[i] += ch[i] / buffer.numberOfChannels;
+            }
+            const frame = 1024;
+            const hop = 256;
+            const rms = [];
+            for (let start = 0; start + frame <= length; start += hop) {
+                let sum = 0;
+                for (let i = 0; i < frame; i++) { const v = mono[start+i]; sum += v*v; }
+                rms.push(Math.sqrt(sum / frame));
+            }
+            const max = Math.max(1e-9, ...rms);
+            const env = rms.map(v => v / max);
+            const smooth = env.map((_, i) => {
+                let sum=0, count=0;
+                for (let j=Math.max(0,i-2); j<=Math.min(env.length-1,i+2); j++) { sum+=env[j]; count++; }
+                return sum/count;
+            });
+            const flux = smooth.map((v,i)=> i ? Math.max(0,v-smooth[i-1]) : 0);
+            const sortedFlux=[...flux].sort((a,b)=>a-b);
+            const median=sortedFlux[Math.floor(sortedFlux.length*0.5)] || 0;
+            const p85=sortedFlux[Math.floor(sortedFlux.length*0.85)] || 0;
+            const threshold=Math.max(0.012, median*3, p85*0.65);
+            const minFrames=Math.max(1,Math.round(0.055*sr/hop));
+            const onsets=[];
+            let last=-minFrames;
+            for(let i=1;i<flux.length-1;i++){
+                if(flux[i]>=threshold && flux[i]>=flux[i-1] && flux[i]>=flux[i+1] && i-last>=minFrames){
+                    onsets.push(i*hop/sr); last=i;
+                }
+            }
+            return {sampleRate:sr, duration:buffer.duration, hop, envelope:smooth, onsets};
+        }
+
+        function envelopeAt(seconds) {
+            const a=state.audioAnalysis;
+            if(!a) return 0;
+            const idx=Math.max(0,Math.min(a.envelope.length-1,Math.round(seconds*a.sampleRate/a.hop)));
+            return a.envelope[idx] || 0;
+        }
+
+        function applyAudioGuidance(notes) {
+            const a=state.audioAnalysis;
+            if(!a || !$('audioGuideEnabled') || !$('audioGuideEnabled').checked) return notes.map(n=>({...n}));
+            const tpb=state.ticksPerBeat||480;
+            const bpm=state.tempo||120;
+            const secPerTick=60/(bpm*tpb);
+            const tickPerSec=1/secPerTick;
+            const tolerance=0.085;
+            const guided=notes.map(n=>{
+                const startSec=n.start*secPerTick;
+                let nearest=null, best=tolerance+1;
+                for(const onset of a.onsets){
+                    const d=Math.abs(onset-startSec);
+                    if(d<best){best=d; nearest=onset;}
+                    if(onset>startSec+tolerance) break;
+                }
+                let shiftTicks=0;
+                if(nearest!==null && best<=tolerance) shiftTicks=Math.round((nearest-startSec)*tickPerSec*0.75);
+                const attackEnv=envelopeAt(nearest!==null && best<=tolerance ? nearest : startSec);
+                const targetVel=Math.round(24+attackEnv*96);
+                const velocity=Math.max(1,Math.min(127,Math.round(n.velocity*0.55+targetVel*0.45)));
+                let end=n.end+shiftTicks;
+                const shiftedStart=Math.max(0,n.start+shiftTicks);
+                if(end<=shiftedStart) end=shiftedStart+Math.max(1,Math.round(0.03*tickPerSec));
+                // Conservative sustain extension: only bridge a very short tail while energy remains strong.
+                const endSec=end*secPerTick;
+                const tail=envelopeAt(endSec);
+                const later=envelopeAt(endSec+0.06);
+                if(tail>0.18 && later>tail*0.55) end+=Math.round(0.04*tickPerSec);
+                return {...n,start:shiftedStart,end,duration:end-shiftedStart,velocity,audioAligned:shiftTicks!==0};
+            });
+            return guided.sort((x,y)=>x.start-y.start||x.note-y.note);
+        }
+
         // ---- Analysis ----
         function analyzeMIDI() {
             if (!state.notes || state.notes.length === 0) {
@@ -1558,7 +1707,8 @@
             }
 
             const cleaner = new MIDICleaner(state.notes, options);
-            const cleaned = cleaner.clean(modules);
+            let cleaned = cleaner.clean(modules);
+            cleaned = applyAudioGuidance(cleaned);
 
             state.cleanedNotes = cleaned;
             state.isCleaned = true;
@@ -1574,6 +1724,7 @@
                 merged ${stats.merged} fragments,
                 corrected ${stats.corrected} pitches.
                 ${cleaned.length} notes remaining.
+                ${state.audioAnalysis && $('audioGuideEnabled').checked ? cleaned.filter(n => n.audioAligned).length + ' notes aligned to WAV attacks.' : ''}
             `;
             setStatus(`✅ Clean complete — ${summary}`, 'highlight');
 
@@ -2076,13 +2227,14 @@
         // ---- Initialisation ----
         function init() {
             initFileHandling();
+            initAudioHandling();
             resizeCanvas();
 
             // Set default preset
             document.querySelector('.preset-btn[data-preset="standard"]').classList.add('active');
 
-            setStatus('🎵 MIDI Restoration Studio v2.0 — Load a MIDI file to begin', '');
-            console.log('🎵 MIDI Restoration Studio v2.0 loaded');
+            setStatus('🎵 MIDI Restoration Studio v2.4 — Load a MIDI file to begin', '');
+            console.log('🎵 MIDI Restoration Studio v2.4 loaded');
             console.log('📖 Keyboard shortcuts: Space=Play, R=Reset, +/-=Zoom, C=Clean, E=Export, A=Analyze');
         }
 
