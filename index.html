@@ -518,11 +518,13 @@
                 <div class="drop-zone" id="midiDropZone">
                     <div class="drop-zone-icon">🎵</div>
                     <div class="drop-zone-text"><strong>Drop MIDI</strong> or click</div>
+                    <div class="drop-zone-filename" id="midiFileName" style="display:none; font-size:11px; opacity:0.8; margin-top:4px; word-break:break-all;"></div>
                     <input type="file" id="midiInput" accept=".mid,.midi" style="display:none">
                 </div>
                 <div class="drop-zone" id="audioDropZone">
                     <div class="drop-zone-icon">🎤</div>
                     <div class="drop-zone-text"><strong>Drop WAV</strong> or click</div>
+                    <div class="drop-zone-filename" id="audioFileName" style="display:none; font-size:11px; opacity:0.8; margin-top:4px; word-break:break-all;"></div>
                     <input type="file" id="audioInput" accept=".wav,.mp3,.m4a,.aac,.aiff,.aif" style="display:none">
                 </div>
                 <div id="fileStatus" class="file-status missing">No files loaded</div>
@@ -689,6 +691,8 @@
         // ---- State ----
         const state = {
             // MIDI data
+            midiFileName: null,
+            audioFileName: null,
             midiData: null,
             notes: [],
             originalNotes: [],
@@ -1185,11 +1189,15 @@
         // ============================================================
 
         class RestorationEngine {
-            constructor(notes, ppq, tempoMap) {
+            constructor(notes, ppq, tempoMap, originalMaxTime = null) {
                 this.originalNotes = notes.map(n => ({ ...n }));
                 this.notes = notes.map(n => ({ ...n }));
                 this.ppq = ppq;
                 this.tempoMap = tempoMap;
+                // Source end time (ticks). Used as a hard ceiling so no restoration
+                // module can ever push material beyond what the source contained.
+                this.originalMaxTime = originalMaxTime ?? (notes.length
+                    ? Math.max(...notes.map(n => n.end ?? (n.start + 1))) : 0);
                 this.stats = {
                     removed: 0,
                     merged: 0,
@@ -1217,6 +1225,23 @@
                 if (modules.velocity) result = this.smoothVelocity(result);
                 if (modules.chord) result = this.repairChords(result, confidenceMap);
                 if (modules.audio && confidenceMap) result = this.applyAudioConfidence(result, confidenceMap);
+
+                // Final safety pass: restoration must never create material beyond
+                // the source. Quantisation (timing), merging, and hanging-note repair
+                // can each independently push a note's end past the original last
+                // tick — clamp here regardless of which module caused it, instead of
+                // only handling one case.
+                if (this.originalMaxTime > 0) {
+                    const limit = this.originalMaxTime;
+                    result = result.map(n => {
+                        if (n.end > limit) {
+                            const clampedEnd = Math.max(n.start + 1, limit);
+                            this.stats.corrected++;
+                            return { ...n, end: clampedEnd, duration: clampedEnd - n.start };
+                        }
+                        return n;
+                    });
+                }
 
                 // Sort by start time
                 result.sort((a, b) => a.start - b.start);
@@ -1556,6 +1581,10 @@
             reader.onload = function(e) {
                 try {
                     const result = MIDIParser.parse(e.target.result);
+                    state.midiFileName = file.name;
+                    const midiNameEl = $('midiFileName');
+                    midiNameEl.textContent = file.name;
+                    midiNameEl.style.display = 'block';
                     state.midiData = e.target.result;
                     state.notes = result.notes;
                     state.originalNotes = result.notes.map(n => ({ ...n }));
@@ -1604,6 +1633,10 @@
             const reader = new FileReader();
             reader.onload = async function(e) {
                 try {
+                    state.audioFileName = file.name;
+                    const audioNameEl = $('audioFileName');
+                    audioNameEl.textContent = file.name;
+                    audioNameEl.style.display = 'block';
                     const arrayBuffer = e.target.result;
                     await decodeAudio(arrayBuffer);
                     updateFileStatus();
@@ -1642,58 +1675,119 @@
             }
         }
 
+        // In-place iterative radix-2 Cooley-Tukey FFT. re/im are Float64Arrays of
+        // equal power-of-two length. O(n log n) instead of the previous O(n) per
+        // bin per frame DFT, which is what makes analysing a whole recording
+        // (rather than ~1 second of it) fast enough to run in the browser.
+        function fft(re, im) {
+            const n = re.length;
+            for (let i = 1, j = 0; i < n; i++) {
+                let bit = n >> 1;
+                for (; j & bit; bit >>= 1) j ^= bit;
+                j ^= bit;
+                if (i < j) {
+                    [re[i], re[j]] = [re[j], re[i]];
+                    [im[i], im[j]] = [im[j], im[i]];
+                }
+            }
+            for (let len = 2; len <= n; len <<= 1) {
+                const ang = -2 * Math.PI / len;
+                const wr = Math.cos(ang), wi = Math.sin(ang);
+                for (let i = 0; i < n; i += len) {
+                    let curWr = 1, curWi = 0;
+                    for (let j = 0; j < len / 2; j++) {
+                        const ur = re[i + j], ui = im[i + j];
+                        const vr = re[i + j + len / 2] * curWr - im[i + j + len / 2] * curWi;
+                        const vi = re[i + j + len / 2] * curWi + im[i + j + len / 2] * curWr;
+                        re[i + j] = ur + vr; im[i + j] = ui + vi;
+                        re[i + j + len / 2] = ur - vr; im[i + j + len / 2] = ui - vi;
+                        const nWr = curWr * wr - curWi * wi;
+                        const nWi = curWr * wi + curWi * wr;
+                        curWr = nWr; curWi = nWi;
+                    }
+                }
+            }
+        }
+
+        // Converts a MIDI tick position to seconds by integrating the tempo map,
+        // so notes can be aligned against the audio timeline (which is in seconds).
+        function ticksToSeconds(ticks, ppq, tempoMap) {
+            if (!tempoMap || !tempoMap.length) return (ticks / (ppq || 480)) * 0.5;
+            let seconds = 0, lastTick = 0, tempo = tempoMap[0].tempo || 500000;
+            for (const t of tempoMap) {
+                if (t.time >= ticks) break;
+                seconds += ((t.time - lastTick) / (ppq || 480)) * (tempo / 1000000);
+                lastTick = t.time;
+                tempo = t.tempo || tempo;
+            }
+            seconds += ((ticks - lastTick) / (ppq || 480)) * (tempo / 1000000);
+            return seconds;
+        }
+
         async function analyzeAudio(audioData, sampleRate) {
-            // Simple spectral analysis using FFT approximation
             const fftSize = 2048;
-            const hopSize = 512;
             const chroma = new Array(12).fill(0);
-            
-            // Compute chromagram from audio
+
             const window = new Float64Array(fftSize);
             for (let i = 0; i < fftSize; i++) {
                 window[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (fftSize - 1)));
             }
-            
-            const numFrames = Math.floor((audioData.length - fftSize) / hopSize);
-            const spectrogram = [];
-            
-            for (let frame = 0; frame < Math.min(numFrames, 100); frame++) {
+
+            // Cover the FULL recording, not just the first ~100 frames (~1.2s).
+            // Target a bounded frame count so long files stay fast, by spacing
+            // hops out rather than truncating the analysis window.
+            const targetFrames = 1200;
+            const maxStart = Math.max(0, audioData.length - fftSize);
+            const hopSize = Math.max(256, Math.floor(maxStart / targetFrames) || 256);
+            const numFrames = Math.floor(maxStart / hopSize) + 1;
+
+            const spectrogram = []; // per-frame chroma, time-aligned
+            const frameTimes = [];  // seconds, frame center
+
+            const re = new Float64Array(fftSize);
+            const im = new Float64Array(fftSize);
+
+            for (let frame = 0; frame < numFrames; frame++) {
                 const start = frame * hopSize;
-                const frameData = new Float64Array(fftSize);
+                im.fill(0);
                 for (let i = 0; i < fftSize; i++) {
-                    frameData[i] = (audioData[start + i] || 0) * window[i];
+                    re[i] = (audioData[start + i] || 0) * window[i];
                 }
-                
-                // Simple DFT for chroma bins
+                fft(re, im);
+
                 const frameChroma = new Array(12).fill(0);
                 for (let bin = 1; bin < fftSize / 2; bin++) {
                     const freq = bin * sampleRate / fftSize;
                     if (freq < 50 || freq > 2000) continue;
-                    
+
                     const midiNote = 69 + 12 * Math.log2(freq / 440);
                     const chromaBin = Math.round(midiNote) % 12;
-                    
-                    let mag = 0;
-                    for (let i = 0; i < fftSize; i++) {
-                        mag += frameData[i] * Math.cos(2 * Math.PI * bin * i / fftSize);
-                    }
-                    frameChroma[chromaBin] += Math.abs(mag);
+                    const mag = Math.hypot(re[bin], im[bin]);
+                    frameChroma[chromaBin] += mag;
                 }
-                
-                for (let i = 0; i < 12; i++) {
-                    chroma[i] += frameChroma[i];
+
+                // Normalise within the frame so louder/quieter passages remain
+                // comparable — global normalisation would let one loud passage
+                // suppress the perceived support for everything else.
+                const frameMax = Math.max(...frameChroma);
+                if (frameMax > 0) {
+                    for (let i = 0; i < 12; i++) frameChroma[i] /= frameMax;
                 }
+
+                for (let i = 0; i < 12; i++) chroma[i] += frameChroma[i];
                 spectrogram.push(frameChroma);
+                frameTimes.push((start + fftSize / 2) / sampleRate);
             }
-            
-            // Normalize chromagram
+
+            // Normalize chromagram (used for key detection only)
             const max = Math.max(...chroma);
             if (max > 0) {
                 for (let i = 0; i < 12; i++) chroma[i] /= max;
             }
-            
+
             state.chromagram = chroma;
             state.spectrogram = spectrogram;
+            state.frameTimes = frameTimes;
             
             // Simple key detection
             const keys = ['C', 'G', 'D', 'A', 'E', 'B', 'F#', 'C#', 'G#', 'D#', 'A#', 'F'];
@@ -1760,21 +1854,49 @@
             state.confidenceMap.clear();
             state.confidenceExplanations.clear();
             
-            const chroma = state.chromagram || new Array(12).fill(0.5);
             const key = state.detectedKey || 'C';
             const keyRoot = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'].indexOf(key);
-            
+            const spectrogram = state.spectrogram || [];
+            const frameTimes = state.frameTimes || [];
+            const ppq = state.ppq || 480;
+            const tempoMap = state.tempoMap;
+
             for (const note of state.notes) {
                 let confidence = 50;
                 const reasons = [];
                 
-                // 1. Audio support
+                // 1. Audio support — sample the chroma frames that overlap this
+                // note's actual playback window (converted from ticks to seconds
+                // via the tempo map), not a single global average taken from the
+                // start of the recording. A note late in a long piece must be
+                // checked against what the audio was doing at that moment.
                 const noteBin = note.note % 12;
-                if (chroma.length > noteBin) {
-                    const support = chroma[noteBin] || 0;
-                    confidence += support * 25;
-                    if (support > 0.3) reasons.push('audio support');
+                let support = 0;
+                if (spectrogram.length && frameTimes.length) {
+                    const tStart = ticksToSeconds(note.start, ppq, tempoMap);
+                    const tEnd = ticksToSeconds(note.end ?? (note.start + 1), ppq, tempoMap);
+                    let sum = 0, count = 0;
+                    for (let i = 0; i < frameTimes.length; i++) {
+                        if (frameTimes[i] >= tStart && frameTimes[i] <= tEnd) {
+                            sum += spectrogram[i][noteBin] || 0;
+                            count++;
+                        }
+                    }
+                    if (!count) {
+                        // Short note between frame samples — use the nearest frame.
+                        let nearest = 0, best = Infinity;
+                        for (let i = 0; i < frameTimes.length; i++) {
+                            const d = Math.abs(frameTimes[i] - tStart);
+                            if (d < best) { best = d;
+                                nearest = i; }
+                        }
+                        sum = spectrogram[nearest][noteBin] || 0;
+                        count = 1;
+                    }
+                    support = sum / count;
                 }
+                confidence += support * 25;
+                if (support > 0.3) reasons.push('audio support');
                 
                 // 2. Key membership
                 if (keyRoot >= 0) {
@@ -1923,7 +2045,7 @@
             }
 
             // Run restoration
-            const engine = new RestorationEngine(state.notes, state.ppq, state.tempoMap);
+            const engine = new RestorationEngine(state.notes, state.ppq, state.tempoMap, state.originalMaxTime);
             const cleaned = engine.restore(modules, instrument, state.confidenceMap);
 
             state.cleanedNotes = cleaned;
@@ -2046,8 +2168,9 @@
                 const blob = new Blob([midiData], { type: 'audio/midi' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
+                const base = (state.midiFileName || 'restored').replace(/\.(mid|midi)$/i, '');
                 a.href = url;
-                a.download = `restored_${Date.now()}.mid`;
+                a.download = `${base}_restored.mid`;
                 a.click();
                 URL.revokeObjectURL(url);
 
@@ -2236,13 +2359,13 @@
 
             if (hasMIDI && hasAudio) {
                 status.className = 'file-status loaded';
-                status.innerHTML = '✅ MIDI + WAV loaded';
+                status.innerHTML = `✅ ${state.midiFileName || 'MIDI'} + ${state.audioFileName || 'WAV'} loaded`;
             } else if (hasMIDI) {
                 status.className = 'file-status loaded';
-                status.innerHTML = `✅ MIDI loaded (${state.notes.length} notes)`;
+                status.innerHTML = `✅ ${state.midiFileName || 'MIDI'} loaded (${state.notes.length} notes)`;
             } else if (hasAudio) {
                 status.className = 'file-status loaded';
-                status.innerHTML = '✅ WAV loaded';
+                status.innerHTML = `✅ ${state.audioFileName || 'WAV'} loaded`;
             } else {
                 status.className = 'file-status missing';
                 status.innerHTML = '⚠️ Load MIDI and/or WAV files';
