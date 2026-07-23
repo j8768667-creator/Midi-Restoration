@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MIDI Restoration Studio v4.4</title>
+    <title>MIDI Restoration Studio v4.5</title>
     <style>
         /* ===== CSS VARIABLES & RESET ===== */
         :root {
@@ -500,7 +500,7 @@
         <!-- ===== HEADER ===== -->
         <header class="header">
             <div class="header-left">
-                <div class="logo">🎵 MIDI Restoration <span>Studio <span class="version">v4.4</span></span></div>
+                <div class="logo">🎵 MIDI Restoration <span>Studio <span class="version">v4.5</span></span></div>
                 <span class="validation-badge" id="validationBadge">✓ Validated</span>
             </div>
             <div class="header-actions">
@@ -725,7 +725,7 @@
     <!-- ============================================================ -->
     <script>
         // ============================================================
-        // MIDI Restoration Studio v4.4 - Reliable Restoration Build
+        // MIDI Restoration Studio v4.5 - Reliable Restoration Build
         // Core Design: Restoration, not composition
         // ============================================================
 
@@ -2910,8 +2910,8 @@
         function init() {
             initFileHandling();
             renderPianoRoll();
-            setStatus('🎵 MIDI Restoration Studio v4.4 — Load MIDI and WAV files', '');
-            console.log('🎵 MIDI Restoration Studio v4.4');
+            setStatus('🎵 MIDI Restoration Studio v4.5 — Load MIDI and WAV files', '');
+            console.log('🎵 MIDI Restoration Studio v4.5');
             console.log('Core Principles: Restoration, not composition');
             console.log('✅ Standards-compliant MIDI parser/writer');
             console.log('✅ 12 restoration modules');
@@ -2921,5 +2921,288 @@
 
         document.addEventListener('DOMContentLoaded', init);
     </script>
+
+<script>
+/* =====================================================================
+   v4.5 PATCH — Interactive Piano-Roll Editing
+   Merged from Midi-Clean-main v1.6 (multi-select, drag/resize/delete,
+   undo, keyboard shortcuts). Non-invasive: reads state.notes /
+   state.cleanedNotes and layout math matching renderPianoRoll().
+   ===================================================================== */
+(function(){
+  "use strict";
+  if (typeof state === 'undefined' || typeof canvas === 'undefined') return;
+
+  const editState = {
+    selected: new Set(),   // note object refs
+    undoStack: [],         // [{notesSnapshot, cleanedSnapshot, isCleaned}]
+    marquee: null,         // [x1,y1,x2,y2]
+    drag: null,            // {mode,startX,startY,anchor,orig:[{n,s,e,p}]}
+    layout: null,          // cached geometry from last render
+    manualEdits: 0,
+  };
+  window.__editState = editState;
+
+  function activeNotes() {
+    return (state.isCleaned && state.cleanedNotes.length) ? state.cleanedNotes : state.notes;
+  }
+
+  function computeLayout(){
+    const notes = activeNotes();
+    if (!notes || !notes.length) return null;
+    const w = canvas.width, h = canvas.height;
+    const minNote = Math.max(21, Math.min(...notes.map(n => n.note)) - 2);
+    const maxNote = Math.min(108, Math.max(...notes.map(n => n.note)) + 2);
+    const noteRange = maxNote - minNote + 1;
+    const maxTime = Math.max(...notes.map(n => n.end || n.start + 1000)) + 1000;
+    const padding = { top: 16, bottom: 28, left: 32, right: 12 };
+    const plotW = w - padding.left - padding.right;
+    const plotH = h - padding.top - padding.bottom;
+    const noteHeight = Math.min(plotH / noteRange, 9);
+    const timeScale = plotW / maxTime * state.zoomLevel;
+    return { w, h, minNote, maxNote, noteRange, maxTime, padding, plotW, plotH, noteHeight, timeScale };
+  }
+
+  // ---- Wrap renderPianoRoll to cache layout + draw selection/marquee overlay
+  const _origRender = window.renderPianoRoll;
+  if (typeof _origRender === 'function') {
+    window.renderPianoRoll = function(){
+      _origRender.apply(this, arguments);
+      const L = computeLayout(); editState.layout = L;
+      if (!L) return;
+      const notes = activeNotes();
+      // Selection outlines
+      ctx.save();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      for (const n of notes) {
+        if (!editState.selected.has(n)) continue;
+        const x = L.padding.left + n.start * L.timeScale;
+        const endX = L.padding.left + (n.end || n.start + 1000) * L.timeScale;
+        const y = L.padding.top + (L.maxNote - n.note) * L.noteHeight;
+        ctx.strokeRect(x + 0.5, y + 0.5, Math.max(1, endX - x) - 1, Math.max(1, L.noteHeight - 1) - 1);
+      }
+      // Marquee
+      if (editState.marquee) {
+        const [a,b,c,d] = editState.marquee;
+        const rx = Math.min(a,c), ry = Math.min(b,d), rw = Math.abs(c-a), rh = Math.abs(d-b);
+        ctx.fillStyle = 'rgba(88,166,255,0.15)';
+        ctx.fillRect(rx, ry, rw, rh);
+        ctx.strokeStyle = '#58a6ff';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(rx + 0.5, ry + 0.5, rw - 1, rh - 1);
+      }
+      // Edit HUD
+      if (editState.manualEdits || editState.selected.size) {
+        ctx.fillStyle = 'rgba(88,166,255,0.9)';
+        ctx.font = '9px sans-serif';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'top';
+        const msg = (editState.selected.size ? `${editState.selected.size} selected` : '') +
+                    (editState.selected.size && editState.manualEdits ? ' · ' : '') +
+                    (editState.manualEdits ? `${editState.manualEdits} edit${editState.manualEdits>1?'s':''}` : '');
+        ctx.fillText(msg, L.w - 8, 4);
+      }
+      ctx.restore();
+    };
+  }
+
+  function canvasXY(e){
+    const r = canvas.getBoundingClientRect();
+    return [ (e.clientX - r.left) * (canvas.width / r.width),
+             (e.clientY - r.top)  * (canvas.height / r.height) ];
+  }
+
+  function hitTest(px, py){
+    const L = editState.layout; if (!L) return null;
+    const notes = activeNotes();
+    for (let i = notes.length - 1; i >= 0; i--) {
+      const n = notes[i];
+      const x = L.padding.left + n.start * L.timeScale;
+      const endX = L.padding.left + (n.end || n.start + 1000) * L.timeScale;
+      const y = L.padding.top + (L.maxNote - n.note) * L.noteHeight;
+      const w = Math.max(1, endX - x), h = Math.max(2, L.noteHeight);
+      if (px >= x && px <= x + w && py >= y && py <= y + h) {
+        return { note: n, edge: (px >= x + w - Math.min(6, w * 0.4)) };
+      }
+    }
+    return null;
+  }
+
+  function snapshot(){
+    editState.undoStack.push({
+      notes: state.notes.map(n => ({...n})),
+      cleaned: state.cleanedNotes.map(n => ({...n})),
+      isCleaned: state.isCleaned,
+    });
+    if (editState.undoStack.length > 100) editState.undoStack.shift();
+  }
+  function doUndo(){
+    if (!editState.undoStack.length) return;
+    const s = editState.undoStack.pop();
+    state.notes = s.notes;
+    state.cleanedNotes = s.cleaned;
+    state.isCleaned = s.isCleaned;
+    editState.selected.clear();
+    editState.manualEdits = Math.max(0, editState.manualEdits - 1);
+    if (typeof renderPianoRoll === 'function') renderPianoRoll();
+    if (typeof updateStats === 'function') try{updateStats();}catch{}
+  }
+
+  function deleteSelected(){
+    if (!editState.selected.size) return;
+    snapshot();
+    const kill = editState.selected;
+    if (state.isCleaned && state.cleanedNotes.length) {
+      state.cleanedNotes = state.cleanedNotes.filter(n => !kill.has(n));
+    } else {
+      state.notes = state.notes.filter(n => !kill.has(n));
+    }
+    editState.selected.clear();
+    editState.manualEdits++;
+    if (typeof renderPianoRoll === 'function') renderPianoRoll();
+    if (typeof updateStats === 'function') try{updateStats();}catch{}
+  }
+  window.pianoRollDeleteSelected = deleteSelected;
+  window.pianoRollUndo = doUndo;
+
+  // ---- Pointer interactions
+  canvas.addEventListener('pointerdown', (e) => {
+    if (!activeNotes().length) return;
+    const L = editState.layout || computeLayout(); editState.layout = L; if (!L) return;
+    const [px, py] = canvasXY(e);
+    const hit = hitTest(px, py);
+    const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+    canvas.setPointerCapture(e.pointerId);
+
+    if (!hit) {
+      // Marquee
+      const base = additive ? new Set(editState.selected) : new Set();
+      editState.selected = base;
+      editState.marquee = [px, py, px, py];
+      const move = (ev) => {
+        if (ev.pointerId !== e.pointerId) return;
+        const [mx, my] = canvasXY(ev);
+        editState.marquee = [px, py, mx, my];
+        const rx = Math.min(px,mx), ry = Math.min(py,my), rw = Math.abs(mx-px), rh = Math.abs(my-py);
+        const sel = new Set(base);
+        for (const n of activeNotes()) {
+          const nx = L.padding.left + n.start * L.timeScale;
+          const nex = L.padding.left + (n.end || n.start + 1000) * L.timeScale;
+          const ny = L.padding.top + (L.maxNote - n.note) * L.noteHeight;
+          if (nx < rx+rw && nex > rx && ny < ry+rh && ny + L.noteHeight > ry) sel.add(n);
+        }
+        editState.selected = sel;
+        if (typeof renderPianoRoll === 'function') renderPianoRoll();
+      };
+      const up = (ev) => {
+        if (ev.pointerId !== e.pointerId) return;
+        editState.marquee = null;
+        canvas.removeEventListener('pointermove', move);
+        canvas.removeEventListener('pointerup', up);
+        canvas.removeEventListener('pointercancel', up);
+        if (typeof renderPianoRoll === 'function') renderPianoRoll();
+      };
+      canvas.addEventListener('pointermove', move);
+      canvas.addEventListener('pointerup', up);
+      canvas.addEventListener('pointercancel', up);
+      if (typeof renderPianoRoll === 'function') renderPianoRoll();
+      return;
+    }
+
+    // Note hit
+    const already = editState.selected.has(hit.note);
+    if (additive) {
+      if (already) editState.selected.delete(hit.note);
+      else editState.selected.add(hit.note);
+    } else if (!already) {
+      editState.selected = new Set([hit.note]);
+    }
+    if (typeof renderPianoRoll === 'function') renderPianoRoll();
+    if (!editState.selected.has(hit.note)) return;
+
+    // Start drag/resize
+    const originals = [...editState.selected].map(n => ({ n, s:n.start, ee:(n.end||n.start+1000), p:n.note }));
+    let took = false;
+    const drag = { mode: hit.edge ? 'resize' : 'move', startX: px, startY: py, originals };
+    const move = (ev) => {
+      if (ev.pointerId !== e.pointerId) return;
+      const [mx, my] = canvasXY(ev);
+      const dx = (mx - drag.startX) / L.timeScale;
+      const dy = Math.round((my - drag.startY) / L.noteHeight);
+      if (!took && (Math.abs(mx-drag.startX) > 2 || Math.abs(my-drag.startY) > 2)) { snapshot(); took = true; }
+      const minStart = Math.min(...originals.map(o => o.s));
+      const shiftDx = Math.max(dx, -minStart);
+      for (const o of originals) {
+        if (drag.mode === 'resize') {
+          const ne = Math.max(o.s + 1, Math.round(o.ee + dx));
+          o.n.end = ne; o.n.duration = ne - o.n.start;
+        } else {
+          const ns = Math.max(0, Math.round(o.s + shiftDx));
+          const dur = o.ee - o.s;
+          o.n.start = ns; o.n.end = ns + dur; o.n.duration = dur;
+          o.n.note = Math.max(0, Math.min(127, o.p - dy));
+        }
+      }
+      if (typeof renderPianoRoll === 'function') renderPianoRoll();
+    };
+    const up = (ev) => {
+      if (ev.pointerId !== e.pointerId) return;
+      if (took) { editState.manualEdits++; }
+      canvas.removeEventListener('pointermove', move);
+      canvas.removeEventListener('pointerup', up);
+      canvas.removeEventListener('pointercancel', up);
+      if (typeof renderPianoRoll === 'function') renderPianoRoll();
+      if (typeof updateStats === 'function') try{updateStats();}catch{}
+    };
+    canvas.addEventListener('pointermove', move);
+    canvas.addEventListener('pointerup', up);
+    canvas.addEventListener('pointercancel', up);
+  });
+
+  // Cursor feedback
+  canvas.addEventListener('pointermove', (e) => {
+    if (editState.drag || editState.marquee) return;
+    if (e.pointerType !== 'mouse') return;
+    const [px, py] = canvasXY(e);
+    const hit = hitTest(px, py);
+    canvas.style.cursor = hit ? (hit.edge ? 'ew-resize' : 'grab') : 'crosshair';
+  });
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    const tag = (document.activeElement && document.activeElement.tagName) || '';
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if ((e.key === 'z' || e.key === 'Z') && (e.metaKey || e.ctrlKey)) { e.preventDefault(); doUndo(); return; }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && editState.selected.size) { e.preventDefault(); deleteSelected(); return; }
+    if ((e.key === 'a' || e.key === 'A') && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      editState.selected = new Set(activeNotes());
+      if (typeof renderPianoRoll === 'function') renderPianoRoll();
+      return;
+    }
+    if (e.key === 'Escape' && editState.selected.size) {
+      editState.selected.clear();
+      if (typeof renderPianoRoll === 'function') renderPianoRoll();
+    }
+  });
+
+  // Add compact editing toolbar to the piano-roll controls
+  const controls = document.querySelector('.piano-roll-controls');
+  if (controls) {
+    const sep = document.createElement('span'); sep.className = 'sep'; sep.textContent = '|';
+    const undoBtn = document.createElement('button'); undoBtn.textContent = '↶'; undoBtn.title = 'Undo (Ctrl+Z)';
+    undoBtn.onclick = doUndo;
+    const delBtn = document.createElement('button'); delBtn.textContent = '🗑'; delBtn.title = 'Delete selected (Del)';
+    delBtn.onclick = deleteSelected;
+    controls.appendChild(sep);
+    controls.appendChild(undoBtn);
+    controls.appendChild(delBtn);
+  }
+
+  console.log('[v4.5] Interactive piano-roll editing enabled: click/shift-click, marquee, drag, resize, Del, Ctrl+Z, Ctrl+A, Esc.');
+})();
+</script>
+
 </body>
 </html>
