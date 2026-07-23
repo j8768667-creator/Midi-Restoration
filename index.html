@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MIDI Restoration Studio v4.5</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>MIDI Restoration Studio v5.2</title>
     <style>
         /* ===== CSS VARIABLES & RESET ===== */
         :root {
@@ -207,18 +207,21 @@
             position: relative;
             overflow: hidden;
             grid-row: 2 / -1;
+            touch-action: none;
         }
 
         .piano-roll-container {
             width: 100%;
             height: 100%;
             position: relative;
+            touch-action: none;
         }
 
         #pianoRollCanvas {
             width: 100%;
             height: 100%;
             cursor: crosshair;
+            touch-action: none;
         }
 
         .piano-roll-controls {
@@ -232,6 +235,9 @@
             border-radius: var(--radius-sm);
             border: 1px solid var(--border-color);
             backdrop-filter: blur(8px);
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            max-width: 80%;
         }
         .piano-roll-controls button {
             background: var(--bg-tertiary);
@@ -241,6 +247,7 @@
             border-radius: var(--radius-sm);
             cursor: pointer;
             font-size: 10px;
+            touch-action: manipulation;
         }
         .piano-roll-controls button:hover { background: var(--bg-card); color: var(--text-primary); }
         .piano-roll-controls .sep { color: var(--border-color); padding: 0 2px; }
@@ -456,6 +463,7 @@
             .center-panel { grid-row: 3; }
             .right-panel { grid-row: 4; }
             .bottom-panel { grid-row: 5; }
+            .piano-roll-controls { bottom: 4px; right: 4px; font-size: 9px; flex-wrap: wrap; }
         }
 
         /* ===== ANIMATIONS ===== */
@@ -500,7 +508,7 @@
         <!-- ===== HEADER ===== -->
         <header class="header">
             <div class="header-left">
-                <div class="logo">🎵 MIDI Restoration <span>Studio <span class="version">v4.5</span></span></div>
+                <div class="logo">🎵 MIDI Restoration <span>Studio <span class="version">v5.2</span></span></div>
                 <span class="validation-badge" id="validationBadge">✓ Validated</span>
             </div>
             <div class="header-actions">
@@ -532,8 +540,8 @@
                 <div class="file-info-grid" id="fileInfoGrid">
                     <span class="label">Tracks</span>
                     <span class="value" id="trackCount">—</span>
-                    <span class="label">Notes</span>
-                    <span class="value" id="noteCount">—</span>
+                    <span class="label">Events</span>
+                    <span class="value" id="eventCount">—</span>
                     <span class="label">Tempo</span>
                     <span class="value" id="tempoDisplay">—</span>
                     <span class="label">Format</span>
@@ -588,9 +596,9 @@
 
         <!-- ===== CENTER PANEL ===== -->
         <main class="center-panel">
-            <div class="piano-roll-container">
+            <div class="piano-roll-container" id="pianoRollContainer">
                 <canvas id="pianoRollCanvas"></canvas>
-                <div class="piano-roll-controls">
+                <div class="piano-roll-controls" id="pianoRollControls">
                     <button onclick="zoomPianoRoll(-1)">−</button>
                     <span style="font-size:10px;color:var(--text-muted)" id="zoomDisplay">100%</span>
                     <button onclick="zoomPianoRoll(1)">+</button>
@@ -599,6 +607,8 @@
                     <button onclick="toggleConfidenceView()">📊</button>
                     <button onclick="toggleWaveformOverlay()">🌊</button>
                     <button onclick="showChordOverlay()">🎼</button>
+                    <button onclick="window.pianoRollUndo?.()">↶</button>
+                    <button onclick="window.pianoRollDeleteSelected?.()">🗑</button>
                 </div>
             </div>
         </main>
@@ -725,8 +735,9 @@
     <!-- ============================================================ -->
     <script>
         // ============================================================
-        // MIDI Restoration Studio v4.5 - Reliable Restoration Build
-        // Core Design: Restoration, not composition
+        // MIDI Restoration Studio v5.2
+        // Core: Event-based model, lossless export, smarter restoration,
+        // iPad touch editor, validation.
         // ============================================================
 
         // ---- State ----
@@ -735,29 +746,34 @@
             midiFileName: null,
             audioFileName: null,
             midiData: null,
+            // New event-based model
+            song: {
+                format: 1,
+                ppq: 480,
+                tracks: [], // Array of { events: [], channel: 0, name: '' }
+                tempoMap: [{ time: 0, tempo: 500000 }],
+                timeSignatures: [],
+                keySignatures: [],
+                metaEvents: [],
+            },
+            // Extracted notes for editing (references to track events)
             notes: [],
             originalNotes: [],
             cleanedNotes: [],
-            tracks: [],
-            tempoMap: [{ time: 0, tempo: 500000 }],
-            timeSignatures: [],
-            keySignatures: [],
-            ppq: 480,
-            format: 1,
-            duration: 0,
-            originalMaxTime: 0,
-            
-            // Audio data
+            // Full event lists for export
+            originalEvents: [],
+            cleanedEvents: [],
+            // Audio
             audioData: null,
             audioBuffer: null,
             audioContext: null,
             sampleRate: 44100,
-            
             // Analysis
             confidenceMap: new Map(),
             confidenceExplanations: new Map(),
             chromagram: [],
             spectrogram: [],
+            frameTimes: [],
             beats: [],
             onsets: [],
             detectedTempo: 120,
@@ -768,7 +784,6 @@
             voices: [],
             phrases: [],
             stats: null,
-            
             // Restoration
             isCleaned: false,
             confidenceScore: 0,
@@ -780,13 +795,13 @@
             instrument: 'piano',
             activePreset: 'conservative',
             noteIdCounter: 0,
-            
             // Validation
             validationPassed: false,
             validationErrors: [],
-            
             // UI
             isProcessing: false,
+            // Inspector
+            restorationAudit: [],
         };
 
         // ---- DOM Refs ----
@@ -795,269 +810,266 @@
         const ctx = canvas.getContext('2d');
 
         // ============================================================
-        // 1. MIDI PARSER - Standards Compliant
+        // 1. MIDI PARSER - Event-based model (v5.1A)
         // ============================================================
 
         class MIDIParser {
+            static readVarLen(data, stateObj) {
+                let value = 0;
+                let count = 0;
+                let byte = 0;
+                do {
+                    if (stateObj.pos >= data.length) throw new Error('Unexpected end of track while reading variable-length value');
+                    byte = data[stateObj.pos++];
+                    value = (value << 7) | (byte & 0x7F);
+                    if (++count > 4) throw new Error('Invalid MIDI variable-length value');
+                } while (byte & 0x80);
+                return value;
+            }
+
             static parse(arrayBuffer) {
                 const data = new Uint8Array(arrayBuffer);
                 const view = new DataView(arrayBuffer);
-                
-                if (String.fromCharCode(...data.slice(0, 4)) !== 'MThd') {
+                if (data.length < 14 || String.fromCharCode(...data.slice(0, 4)) !== 'MThd') {
                     throw new Error('Not a valid MIDI file');
                 }
-
+                const headerLength = view.getUint32(4);
+                if (headerLength < 6 || 8 + headerLength > data.length) throw new Error('Invalid MIDI header length');
                 const format = view.getUint16(8);
                 const numTracks = view.getUint16(10);
-                const ppq = view.getUint16(12);
-                
-                let pos = 14;
+                const division = view.getUint16(12);
+                if (division & 0x8000) throw new Error('SMPTE time division is not supported in this build');
+                const ppq = division;
+
+                let pos = 8 + headerLength;
                 const tracks = [];
+                const allNotes = [];
                 const tempoMap = [{ time: 0, tempo: 500000 }];
                 const timeSignatures = [];
                 const keySignatures = [];
-                const allNotes = [];
-                let globalTempo = 500000;
                 let maxTime = 0;
-                
+                let noteIdCounter = 0;
+
                 for (let t = 0; t < numTracks; t++) {
-                    if (String.fromCharCode(...data.slice(pos, pos + 4)) !== 'MTrk') {
+                    if (pos + 8 > data.length || String.fromCharCode(...data.slice(pos, pos + 4)) !== 'MTrk') {
                         throw new Error(`Invalid track header at track ${t}`);
                     }
                     const trackLength = view.getUint32(pos + 4);
-                    const trackData = data.slice(pos + 8, pos + 8 + trackLength);
-                    
-                    const result = this.parseTrack(trackData, ppq, t, globalTempo);
+                    const trackStart = pos + 8;
+                    const trackEnd = trackStart + trackLength;
+                    if (trackEnd > data.length) throw new Error(`Track ${t} extends beyond end of file`);
+                    const result = this.parseTrack(data.slice(trackStart, trackEnd), t, noteIdCounter);
+                    noteIdCounter = result.noteIdCounter;
                     tracks.push(result);
                     allNotes.push(...result.notes);
-                    
                     for (const ev of result.events) {
-                        if (ev.type === 'tempo') {
-                            globalTempo = ev.tempo;
-                            tempoMap.push({ time: ev.time, tempo: ev.tempo });
-                        }
-                        if (ev.type === 'time_signature') {
-                            timeSignatures.push(ev);
-                        }
-                        if (ev.type === 'key_signature') {
-                            keySignatures.push(ev);
-                        }
+                        if (ev.type === 'tempo') tempoMap.push({ time: ev.time, tempo: ev.tempo });
+                        else if (ev.type === 'time_signature') timeSignatures.push(ev);
+                        else if (ev.type === 'key_signature') keySignatures.push(ev);
                     }
-                    
-                    if (result.maxTime > maxTime) maxTime = result.maxTime;
-                    pos += 8 + trackLength;
+                    maxTime = Math.max(maxTime, result.endTick, result.maxTime);
+                    pos = trackEnd;
                 }
-                
+
                 tempoMap.sort((a, b) => a.time - b.time);
-                
-                // Calculate duration in seconds
-                const duration = maxTime / ppq * 0.5; // Rough conversion
-                
+                const dedupTempo = [];
+                for (const ev of tempoMap) {
+                    const last = dedupTempo[dedupTempo.length - 1];
+                    if (last && last.time === ev.time) last.tempo = ev.tempo;
+                    else dedupTempo.push({ ...ev });
+                }
+
+                let duration = 0, lastTick = 0, activeTempo = 500000;
+                for (const ev of dedupTempo) {
+                    if (ev.time > maxTime) break;
+                    duration += ((ev.time - lastTick) / ppq) * (activeTempo / 1000000);
+                    lastTick = ev.time;
+                    activeTempo = ev.tempo || activeTempo;
+                }
+                duration += ((maxTime - lastTick) / ppq) * (activeTempo / 1000000);
+
                 return {
-                    format,
-                    numTracks,
-                    ppq,
-                    tracks,
-                    notes: allNotes.sort((a, b) => a.start - b.start || a.note - b.note),
-                    tempoMap,
-                    timeSignatures,
-                    keySignatures,
-                    duration,
-                    maxTime,
+                    format, numTracks, ppq, tracks,
+                    notes: allNotes.sort((a, b) => a.start - b.start || a.track - b.track || a.channel - b.channel || a.note - b.note),
+                    tempoMap: dedupTempo, timeSignatures, keySignatures,
+                    duration, maxTime, noteIdCounter,
                 };
             }
 
-            static parseTrack(data, ppq, trackIndex, defaultTempo) {
-                let pos = 0;
+            static parseTrack(data, trackIndex, noteIdCounter) {
+                const cursor = { pos: 0 };
                 let currentTime = 0;
                 let runningStatus = null;
+                let endTick = 0;
+                let maxTime = 0;
+                let sequence = 0;
                 const notes = [];
                 const events = [];
-                const activeNotes = new Map();
-                let tempo = defaultTempo;
-                let maxTime = 0;
+                const activeNotes = new Map(); // key -> FIFO queue
 
-                while (pos < data.length) {
-                    // Standard MIDI VLQ is big-endian in 7-bit groups.
-                    let delta = 0;
-                    let byte;
-                    do {
-                        if (pos >= data.length) throw new Error('Unexpected end of track while reading delta time');
-                        byte = data[pos++];
-                        delta = (delta << 7) | (byte & 0x7F);
-                    } while (byte & 0x80);
+                const pushEvent = ev => events.push({ ...ev, track: trackIndex, order: sequence++ });
+
+                while (cursor.pos < data.length) {
+                    const delta = this.readVarLen(data, cursor);
                     currentTime += delta;
-                    if (currentTime > maxTime) maxTime = currentTime;
+                    maxTime = Math.max(maxTime, currentTime);
+                    if (cursor.pos >= data.length) break;
 
-                    if (pos >= data.length) break;
-
-                    let status = data[pos++];
-                    
+                    let status = data[cursor.pos++];
                     if (status < 0x80) {
-                        if (runningStatus === null) { pos--; continue; }
-                        pos--;
+                        if (runningStatus === null) throw new Error(`Running status without prior channel status in track ${trackIndex}`);
+                        cursor.pos--;
                         status = runningStatus;
-                    } else {
+                    } else if (status >= 0x80 && status <= 0xEF) {
                         runningStatus = status;
+                    } else {
+                        runningStatus = null;
                     }
 
-                    const type = status >> 4;
-                    const channel = status & 0x0F;
-
                     if (status === 0xFF) {
-                        if (pos >= data.length) break;
-                        const metaType = data[pos++];
-                        if (pos >= data.length) break;
-                        let length = 0;
-                        let lengthByte;
-                        do {
-                            if (pos >= data.length) throw new Error('Unexpected end of track while reading meta-event length');
-                            lengthByte = data[pos++];
-                            length = (length << 7) | (lengthByte & 0x7F);
-                        } while (lengthByte & 0x80);
-                        const metaData = data.slice(pos, pos + length);
-                        pos += length;
-                        
-                        if (metaType === 0x51 && metaData.length >= 3) {
-                            tempo = (metaData[0] << 16) | (metaData[1] << 8) | metaData[2];
-                            events.push({ time: currentTime, type: 'tempo', tempo });
+                        if (cursor.pos >= data.length) throw new Error('Truncated meta event');
+                        const metaType = data[cursor.pos++];
+                        const length = this.readVarLen(data, cursor);
+                        if (cursor.pos + length > data.length) throw new Error('Meta event exceeds track boundary');
+                        const metaData = data.slice(cursor.pos, cursor.pos + length);
+                        cursor.pos += length;
+
+                        if (metaType === 0x2F) {
+                            endTick = currentTime;
+                            break;
+                        } else if (metaType === 0x51 && metaData.length >= 3) {
+                            const tempo = (metaData[0] << 16) | (metaData[1] << 8) | metaData[2];
+                            pushEvent({ time: currentTime, type: 'tempo', tempo, metaType, data: metaData });
                         } else if (metaType === 0x58 && metaData.length >= 4) {
-                            events.push({ 
-                                time: currentTime, 
-                                type: 'time_signature', 
-                                numerator: metaData[0], 
-                                denominator: Math.pow(2, metaData[1])
-                            });
+                            pushEvent({ time: currentTime, type: 'time_signature', numerator: metaData[0], denominator: 2 ** metaData[1], clocks: metaData[2], thirtySeconds: metaData[3], metaType, data: metaData });
                         } else if (metaType === 0x59 && metaData.length >= 2) {
-                            events.push({
-                                time: currentTime,
-                                type: 'key_signature',
-                                key: metaData[0],
-                                scale: metaData[1]
-                            });
+                            pushEvent({ time: currentTime, type: 'key_signature', key: metaData[0] > 127 ? metaData[0] - 256 : metaData[0], scale: metaData[1], metaType, data: metaData });
+                        } else {
+                            pushEvent({ time: currentTime, type: 'meta', metaType, data: metaData });
                         }
                         continue;
                     }
 
                     if (status === 0xF0 || status === 0xF7) {
-                        let len = 0;
-                        let b;
-                        try {
-                            do { b = data[pos++]; len++; } while (b !== 0xF7 && pos < data.length);
-                        } catch (e) {}
-                        events.push({ time: currentTime, type: 'sysex', length: len });
+                        const length = this.readVarLen(data, cursor);
+                        if (cursor.pos + length > data.length) throw new Error('SysEx event exceeds track boundary');
+                        const payload = data.slice(cursor.pos, cursor.pos + length);
+                        cursor.pos += length;
+                        pushEvent({ time: currentTime, type: 'sysex', status, data: payload });
                         continue;
                     }
 
-                    if (pos + 1 >= data.length) break;
-                    
-                    if (type === 0x8 || type === 0x9) {
-                        const note = data[pos++];
-                        const velocity = data[pos++];
-                        const key = `${trackIndex}|${channel}|${note}`;
+                    const type = status >> 4;
+                    const channel = status & 0x0F;
+                    const oneByte = type === 0xC || type === 0xD;
+                    const needed = oneByte ? 1 : 2;
+                    if (cursor.pos + needed > data.length) throw new Error(`Truncated channel event in track ${trackIndex}`);
+                    const p1 = data[cursor.pos++];
+                    const p2 = oneByte ? 0 : data[cursor.pos++];
 
-                        if (type === 0x9 && velocity > 0) {
-                            activeNotes.set(key, { 
-                                start: currentTime, 
-                                velocity, 
-                                channel, 
-                                track: trackIndex,
-                                noteId: state.noteIdCounter++,
-                            });
+                    if (type === 0x8 || type === 0x9) {
+                        const isOn = type === 0x9 && p2 > 0;
+                        const key = `${channel}|${p1}`;
+                        if (isOn) {
+                            const noteId = noteIdCounter++;
+                            const active = { start: currentTime, velocity: p2, channel, track: trackIndex, noteId, note: p1 };
+                            if (!activeNotes.has(key)) activeNotes.set(key, []);
+                            activeNotes.get(key).push(active);
+                            pushEvent({ time: currentTime, type: 'note_on', note: p1, velocity: p2, channel, noteId });
                         } else {
-                            if (activeNotes.has(key)) {
-                                const active = activeNotes.get(key);
-                                notes.push({
-                                    id: active.noteId,
-                                    track: trackIndex,
-                                    channel: channel,
-                                    note: note,
-                                    start: active.start,
-                                    end: currentTime,
-                                    duration: currentTime - active.start,
-                                    velocity: active.velocity,
-                                });
-                                activeNotes.delete(key);
+                            const queue = activeNotes.get(key);
+                            if (queue && queue.length) {
+                                const active = queue.shift();
+                                if (!queue.length) activeNotes.delete(key);
+                                const end = Math.max(currentTime, active.start + 1);
+                                notes.push({ id: active.noteId, track: trackIndex, channel, note: p1, start: active.start, end, duration: end - active.start, velocity: active.velocity });
+                                pushEvent({ time: currentTime, type: 'note_off', note: p1, velocity: p2, channel, noteId: active.noteId });
+                            } else {
+                                pushEvent({ time: currentTime, type: 'note_off', note: p1, velocity: p2, channel, orphan: true });
                             }
                         }
-                    } else if (type === 0xA || type === 0xB || type === 0xC || type === 0xD || type === 0xE) {
-                        if (type === 0xC || type === 0xD) { if (pos < data.length) data[pos++]; }
-                        else { if (pos + 1 < data.length) { data[pos++]; data[pos++]; } }
+                    } else if (type === 0xA) {
+                        pushEvent({ time: currentTime, type: 'aftertouch_poly', note: p1, pressure: p2, channel });
+                    } else if (type === 0xB) {
+                        pushEvent({ time: currentTime, type: 'control_change', controller: p1, value: p2, channel });
+                    } else if (type === 0xC) {
+                        pushEvent({ time: currentTime, type: 'program_change', program: p1, channel });
+                    } else if (type === 0xD) {
+                        pushEvent({ time: currentTime, type: 'aftertouch_channel', pressure: p1, channel });
+                    } else if (type === 0xE) {
+                        pushEvent({ time: currentTime, type: 'pitch_bend', value: ((p2 << 7) | p1) - 8192, channel });
                     }
                 }
 
-                // Handle hanging notes - repair them rather than discard
-                for (const [key, active] of activeNotes) {
-                    notes.push({
-                        id: active.noteId,
-                        track: trackIndex,
-                        channel: active.channel,
-                        note: parseInt(key.split('|')[2]),
-                        start: active.start,
-                        end: currentTime,
-                        duration: currentTime - active.start,
-                        velocity: active.velocity,
-                        hanging: true,
-                    });
+                const hangingEnd = Math.max(currentTime, endTick, maxTime);
+                for (const queue of activeNotes.values()) {
+                    for (const active of queue) {
+                        const end = Math.max(active.start + 1, hangingEnd);
+                        notes.push({ id: active.noteId, track: trackIndex, channel: active.channel, note: active.note, start: active.start, end, duration: end - active.start, velocity: active.velocity, hanging: true });
+                        pushEvent({ time: end, type: 'note_off', note: active.note, velocity: 0, channel: active.channel, noteId: active.noteId, generatedForHanging: true });
+                    }
                 }
 
-                return { notes, events, maxTime };
+                events.sort((a, b) => a.time - b.time || a.order - b.order);
+                return { notes, events, maxTime, endTick: Math.max(endTick, currentTime), noteIdCounter };
             }
         }
 
         // ============================================================
-        // 2. MIDI WRITER - Standards Compliant
+        // 2. MIDI WRITER - Lossless export (v5.1B)
         // ============================================================
 
         class MIDIWriter {
-            static write(notes, ppq, tempoMap, timeSignatures, keySignatures, format = 0, endTick = null) {
-                const events = this.buildEventTimeline(notes, tempoMap, timeSignatures, keySignatures);
-                const finalTick = endTick == null
-                    ? Math.max(0, ...notes.map(n => Math.round(n.end ?? (n.start + 1))))
-                    : Math.max(0, Math.round(endTick));
-
-                const header = this.writeHeader(0, 1, ppq);
-                const trackData = this.writeTrack(events, finalTick);
-                const result = new Uint8Array(header.length + trackData.length);
-                result.set(header, 0);
-                result.set(trackData, header.length);
-                return result;
+            static eventPriority(ev) {
+                if (ev.type === 'tempo' || ev.type === 'time_signature' || ev.type === 'key_signature' || ev.type === 'meta' || ev.type === 'sysex') return 0;
+                if (ev.type === 'control_change' || ev.type === 'program_change' || ev.type === 'pitch_bend' || ev.type.startsWith('aftertouch')) return 1;
+                if (ev.type === 'note_off') return 2;
+                if (ev.type === 'note_on') return 3;
+                return 9;
             }
 
-            static buildEventTimeline(notes, tempoMap, timeSignatures, keySignatures) {
-                const events = [];
+            static write(song, notes) {
+                const ppq = song.ppq || 480;
+                const format = Number.isInteger(song.format) ? song.format : 1;
+                const noteMap = new Map(notes.map(n => [n.id, n]));
+                const originalNoteIds = new Set();
+                for (const track of song.tracks) for (const ev of track.events) if (ev.noteId !== undefined) originalNoteIds.add(ev.noteId);
+                const removedIds = new Set([...originalNoteIds].filter(id => !noteMap.has(id)));
 
-                for (const t of (tempoMap || [])) {
-                    events.push({ time: Math.max(0, Math.round(t.time || 0)), type: 'tempo', tempo: t.tempo || 500000 });
-                }
-                for (const ts of (timeSignatures || [])) {
-                    events.push({ time: Math.max(0, Math.round(ts.time || 0)), type: 'time_signature', ...ts });
-                }
-                for (const ks of (keySignatures || [])) {
-                    events.push({ time: Math.max(0, Math.round(ks.time || 0)), type: 'key_signature', ...ks });
-                }
-                for (const n of notes) {
-                    const start = Math.max(0, Math.round(n.start));
-                    const end = Math.max(start + 1, Math.round(n.end ?? (n.start + Math.max(1, n.duration || 1))));
-                    events.push({
-                        time: start, type: 'note_on', note: n.note,
-                        velocity: Math.min(127, Math.max(1, n.velocity || 64)),
-                        channel: n.channel || 0, id: n.id ?? 0
-                    });
-                    events.push({
-                        time: end, type: 'note_off', note: n.note, velocity: 0,
-                        channel: n.channel || 0, id: n.id ?? 0
-                    });
-                }
+                const chunks = song.tracks.map((track, trackIndex) => {
+                    const outputEvents = [];
+                    for (const ev of track.events) {
+                        if (ev.type === 'note_on' || ev.type === 'note_off') {
+                            if (ev.noteId !== undefined) {
+                                if (removedIds.has(ev.noteId)) continue;
+                                const clean = noteMap.get(ev.noteId);
+                                if (!clean) continue;
+                                outputEvents.push({
+                                    ...ev,
+                                    time: ev.type === 'note_on' ? clean.start : clean.end,
+                                    note: clean.note,
+                                    velocity: ev.type === 'note_on' ? clean.velocity : (ev.velocity || 0),
+                                });
+                            } else if (ev.orphan) {
+                                outputEvents.push({ ...ev });
+                            }
+                        } else {
+                            outputEvents.push({ ...ev });
+                        }
+                    }
+                    outputEvents.sort((a, b) => a.time - b.time || this.eventPriority(a) - this.eventPriority(b) || (a.order ?? 0) - (b.order ?? 0));
+                    const lastEventTick = outputEvents.reduce((m, e) => Math.max(m, Math.round(e.time || 0)), 0);
+                    const originalEnd = Math.max(0, Math.round(track.endTick || track.maxTime || 0));
+                    return this.writeTrackEvents(outputEvents, Math.max(lastEventTick, originalEnd));
+                });
 
-                const priority = { tempo: 0, time_signature: 1, key_signature: 2, note_off: 3, note_on: 4 };
-                return events.sort((a, b) =>
-                    a.time - b.time ||
-                    (priority[a.type] ?? 9) - (priority[b.type] ?? 9) ||
-                    (a.channel || 0) - (b.channel || 0) ||
-                    (a.note || 0) - (b.note || 0) ||
-                    (a.id || 0) - (b.id || 0)
-                );
+                const header = this.writeHeader(format, chunks.length, ppq);
+                const total = header.length + chunks.reduce((n, c) => n + c.length, 0);
+                const result = new Uint8Array(total);
+                let offset = 0;
+                result.set(header, offset); offset += header.length;
+                for (const c of chunks) { result.set(c, offset); offset += c.length; }
+                return result;
             }
 
             static writeHeader(format, numTracks, ppq) {
@@ -1071,33 +1083,47 @@
                 return data;
             }
 
-            static writeTrack(events, endTick) {
+            static writeTrackEvents(events, endTick) {
                 const bytes = [];
                 let currentTime = 0;
-
                 for (const ev of events) {
-                    const eventTime = Math.max(currentTime, Math.round(ev.time));
+                    const eventTime = Math.max(currentTime, Math.round(ev.time || 0));
                     bytes.push(...this.writeVarLen(eventTime - currentTime));
+                    currentTime = eventTime;
 
-                    if (ev.type === 'tempo') {
+                    if (ev.type === 'meta') {
+                        const data = ev.data || new Uint8Array(0);
+                        bytes.push(0xFF, ev.metaType & 0xFF, ...this.writeVarLen(data.length), ...data);
+                    } else if (ev.type === 'tempo') {
                         const tempo = ev.tempo || 500000;
                         bytes.push(0xFF, 0x51, 0x03, (tempo >> 16) & 0xFF, (tempo >> 8) & 0xFF, tempo & 0xFF);
                     } else if (ev.type === 'time_signature') {
-                        const denominator = Math.max(1, ev.denominator || 4);
-                        bytes.push(0xFF, 0x58, 0x04, ev.numerator || 4, Math.round(Math.log2(denominator)), 24, 8);
+                        const den = Math.max(0, Math.round(Math.log2(ev.denominator || 4)));
+                        bytes.push(0xFF, 0x58, 0x04, ev.numerator || 4, den, ev.clocks ?? 24, ev.thirtySeconds ?? 8);
                     } else if (ev.type === 'key_signature') {
-                        bytes.push(0xFF, 0x59, 0x02, (ev.key || 0) & 0xFF, (ev.scale || 0) & 0xFF);
+                        bytes.push(0xFF, 0x59, 0x02, ev.key & 0xFF, (ev.scale || 0) & 0xFF);
+                    } else if (ev.type === 'sysex') {
+                        const payload = ev.data || new Uint8Array(0);
+                        bytes.push(ev.status === 0xF7 ? 0xF7 : 0xF0, ...this.writeVarLen(payload.length), ...payload);
                     } else if (ev.type === 'note_on') {
-                        bytes.push(0x90 | (ev.channel & 0x0F), ev.note & 0x7F, ev.velocity & 0x7F);
+                        bytes.push(0x90 | (ev.channel & 0x0F), ev.note & 0x7F, Math.max(1, Math.min(127, ev.velocity || 64)));
                     } else if (ev.type === 'note_off') {
-                        bytes.push(0x80 | (ev.channel & 0x0F), ev.note & 0x7F, 0);
+                        bytes.push(0x80 | (ev.channel & 0x0F), ev.note & 0x7F, Math.max(0, Math.min(127, ev.velocity || 0)));
+                    } else if (ev.type === 'program_change') {
+                        bytes.push(0xC0 | (ev.channel & 0x0F), ev.program & 0x7F);
+                    } else if (ev.type === 'control_change') {
+                        bytes.push(0xB0 | (ev.channel & 0x0F), ev.controller & 0x7F, ev.value & 0x7F);
+                    } else if (ev.type === 'pitch_bend') {
+                        const val = Math.max(-8192, Math.min(8191, ev.value || 0)) + 8192;
+                        bytes.push(0xE0 | (ev.channel & 0x0F), val & 0x7F, (val >> 7) & 0x7F);
+                    } else if (ev.type === 'aftertouch_poly') {
+                        bytes.push(0xA0 | (ev.channel & 0x0F), ev.note & 0x7F, ev.pressure & 0x7F);
+                    } else if (ev.type === 'aftertouch_channel') {
+                        bytes.push(0xD0 | (ev.channel & 0x0F), ev.pressure & 0x7F);
                     }
-                    currentTime = eventTime;
                 }
-
-                const finalTime = Math.max(currentTime, endTick || 0);
-                bytes.push(...this.writeVarLen(finalTime - currentTime), 0xFF, 0x2F, 0x00);
-
+                const finalTick = Math.max(currentTime, endTick || 0);
+                bytes.push(...this.writeVarLen(finalTick - currentTime), 0xFF, 0x2F, 0x00);
                 const result = new Uint8Array(8 + bytes.length);
                 result.set([0x4D, 0x54, 0x72, 0x6B], 0);
                 new DataView(result.buffer).setUint32(4, bytes.length);
@@ -1114,513 +1140,9 @@
         }
 
         // ============================================================
-        // 3. ANALYSIS ENGINE - Read-Only
+        // 3. File Handling - updated for event model
         // ============================================================
 
-        class AnalysisEngine {
-            static analyze(notes, ppq, tempoMap) {
-                const stats = {
-                    noteCount: notes.length,
-                    duplicates: 0,
-                    overlaps: 0,
-                    hanging: 0,
-                    outOfRange: 0,
-                    minNote: 128,
-                    maxNote: 0,
-                    avgVelocity: 0,
-                    avgDuration: 0,
-                    velocityHistogram: new Array(128).fill(0),
-                    pitchHistogram: new Array(128).fill(0),
-                    confidence: 0,
-                    issues: [],
-                };
-
-                if (notes.length === 0) return stats;
-
-                const seen = new Set();
-                let totalVelocity = 0;
-                let totalDuration = 0;
-
-                for (const n of notes) {
-                    // Track ranges
-                    if (n.note < stats.minNote) stats.minNote = n.note;
-                    if (n.note > stats.maxNote) stats.maxNote = n.note;
-                    
-                    // Histograms
-                    stats.pitchHistogram[n.note] = (stats.pitchHistogram[n.note] || 0) + 1;
-                    stats.velocityHistogram[n.velocity] = (stats.velocityHistogram[n.velocity] || 0) + 1;
-                    
-                    totalVelocity += n.velocity;
-                    totalDuration += n.duration || 240;
-
-                    // Duplicate detection
-                    const key = `${n.note}|${Math.round(n.start)}|${Math.round(n.end)}`;
-                    if (seen.has(key)) stats.duplicates++;
-                    else seen.add(key);
-
-                    // Hanging notes
-                    if (n.hanging) stats.hanging++;
-
-                    // Out of range
-                    if (n.note < 21 || n.note > 108) stats.outOfRange++;
-
-                    // Overlaps (same note, overlapping time)
-                    for (const other of notes) {
-                        if (n === other) continue;
-                        if (n.note === other.note &&
-                            n.start < other.end &&
-                            other.start < n.end) {
-                            stats.overlaps++;
-                            break;
-                        }
-                    }
-                }
-
-                stats.avgVelocity = Math.round(totalVelocity / notes.length);
-                stats.avgDuration = Math.round(totalDuration / notes.length);
-
-                // Calculate confidence score
-                let confidence = 100;
-                if (stats.duplicates > 0) {
-                    confidence -= Math.min(20, stats.duplicates * 2);
-                    stats.issues.push(`${stats.duplicates} duplicate notes`);
-                }
-                if (stats.hanging > 0) {
-                    confidence -= Math.min(15, stats.hanging * 3);
-                    stats.issues.push(`${stats.hanging} hanging notes`);
-                }
-                if (stats.overlaps > 0) {
-                    confidence -= Math.min(20, stats.overlaps);
-                    stats.issues.push(`${stats.overlaps} overlapping notes`);
-                }
-                if (stats.outOfRange > 0) {
-                    confidence -= Math.min(15, stats.outOfRange * 2);
-                    stats.issues.push(`${stats.outOfRange} notes outside piano range`);
-                }
-                if (notes.length < 10) {
-                    confidence -= 10;
-                    stats.issues.push('Very few notes detected');
-                }
-
-                stats.confidence = Math.max(0, Math.min(100, confidence));
-
-                return stats;
-            }
-
-            static detectTempo(notes, ppq) {
-                if (notes.length < 4) return 120;
-                
-                // Estimate tempo from note intervals
-                const intervals = [];
-                for (let i = 1; i < Math.min(notes.length, 50); i++) {
-                    const gap = notes[i].start - notes[i-1].start;
-                    if (gap > 0 && gap < 2000) intervals.push(gap);
-                }
-                
-                if (intervals.length < 2) return 120;
-                
-                intervals.sort((a, b) => a - b);
-                const median = intervals[Math.floor(intervals.length / 2)];
-                const bpm = 60 / (median / ppq * 0.5);
-                
-                return Math.round(Math.max(40, Math.min(250, bpm)));
-            }
-        }
-
-        // ============================================================
-        // 4. RESTORATION ENGINE - Non-Destructive, Module-Based
-        // ============================================================
-
-        class RestorationEngine {
-            constructor(notes, ppq, tempoMap, originalMaxTime = null) {
-                this.originalNotes = notes.map(n => ({ ...n }));
-                this.notes = notes.map(n => ({ ...n }));
-                this.ppq = ppq;
-                this.tempoMap = tempoMap;
-                // Source end time (ticks). Used as a hard ceiling so no restoration
-                // module can ever push material beyond what the source contained.
-                this.originalMaxTime = originalMaxTime ?? (notes.length
-                    ? Math.max(...notes.map(n => n.end ?? (n.start + 1))) : 0);
-                this.stats = {
-                    removed: 0,
-                    merged: 0,
-                    repaired: 0,
-                    corrected: 0,
-                };
-                this.modules = {};
-            }
-
-            restore(modules, instrument, confidenceMap, keyRoot = null, keyScale = 'major') {
-                this.modules = modules;
-                let result = this.originalNotes.map(n => ({ ...n }));
-                this.stats = { removed: 0, merged: 0, repaired: 0, corrected: 0, keyCorrected: 0 };
-
-                // Apply modules in order (conservative first, then corrective)
-                if (modules.duplicate) result = this.removeDuplicates(result);
-                if (modules.hanging) result = this.repairHanging(result);
-                if (modules.overlap) result = this.repairOverlaps(result);
-                if (modules.ghost) result = this.removeGhosts(result, instrument);
-                if (modules.merge) result = this.mergeNotes(result);
-                if (modules.voice) result = this.separateVoices(result);
-                if (modules.phrase) result = this.repairPhrases(result);
-                if (modules.pitch) result = this.repairPitchFlicker(result);
-                if (modules.key && keyRoot !== null && keyRoot !== '') result = this.correctToKey(result, parseInt(keyRoot, 10), keyScale);
-                if (modules.timing) result = this.repairTiming(result);
-                if (modules.velocity) result = this.smoothVelocity(result);
-                if (modules.chord) result = this.repairChords(result, confidenceMap);
-                if (modules.audio && confidenceMap) result = this.applyAudioConfidence(result, confidenceMap);
-
-                // Final safety pass: restoration must never create material beyond
-                // the source. Quantisation (timing), merging, and hanging-note repair
-                // can each independently push a note's end past the original last
-                // tick — clamp here regardless of which module caused it, instead of
-                // only handling one case.
-                if (this.originalMaxTime > 0) {
-                    const limit = this.originalMaxTime;
-                    result = result.map(n => {
-                        if (n.end > limit) {
-                            const clampedEnd = Math.max(n.start + 1, limit);
-                            this.stats.corrected++;
-                            return { ...n, end: clampedEnd, duration: clampedEnd - n.start };
-                        }
-                        return n;
-                    });
-                }
-
-                // Sort by start time
-                result.sort((a, b) => a.start - b.start);
-
-                return result;
-            }
-
-            removeDuplicates(notes) {
-                const seen = new Set();
-                const result = [];
-                for (const n of notes) {
-                    const key = `${n.note}|${Math.round(n.start)}|${Math.round(n.end)}`;
-                    if (!seen.has(key)) {
-                        seen.add(key);
-                        result.push(n);
-                    } else {
-                        this.stats.removed++;
-                    }
-                }
-                return result;
-            }
-
-            repairHanging(notes) {
-                return notes.map(n => {
-                    if (n.hanging) {
-                        // Extend to a reasonable duration
-                        n.end = n.start + 240;
-                        n.duration = 240;
-                        n.hanging = false;
-                        this.stats.repaired++;
-                    }
-                    return n;
-                });
-            }
-
-            repairOverlaps(notes) {
-                const sorted = notes.map(n => ({ ...n })).sort((a, b) =>
-                    a.track - b.track || a.channel - b.channel || a.note - b.note || a.start - b.start
-                );
-                const lastByKey = new Map();
-                const result = [];
-
-                for (const n of sorted) {
-                    const key = `${n.track || 0}|${n.channel || 0}|${n.note}`;
-                    const previous = lastByKey.get(key);
-                    if (previous && previous.end > n.start) {
-                        previous.end = Math.max(previous.start + 1, n.start);
-                        previous.duration = previous.end - previous.start;
-                        this.stats.repaired++;
-                    }
-                    n.end = Math.max(n.start + 1, n.end ?? (n.start + Math.max(1, n.duration || 1)));
-                    n.duration = n.end - n.start;
-                    result.push(n);
-                    lastByKey.set(key, n);
-                }
-                return result.sort((a, b) => a.start - b.start || a.note - b.note);
-            }
-
-            removeGhosts(notes, instrument) {
-                const thresholds = {
-                    piano: { minDuration: 60, minVelocity: 8 },
-                    guitar: { minDuration: 50, minVelocity: 10 },
-                    bass: { minDuration: 80, minVelocity: 12 },
-                    strings: { minDuration: 100, minVelocity: 10 },
-                    vocals: { minDuration: 120, minVelocity: 10 },
-                    drums: { minDuration: 30, minVelocity: 15 },
-                    auto: { minDuration: 60, minVelocity: 8 },
-                };
-                
-                const t = thresholds[instrument] || thresholds.piano;
-                
-                return notes.filter(n => {
-                    const duration = n.duration || 240;
-                    if (duration < t.minDuration) {
-                        this.stats.removed++;
-                        return false;
-                    }
-                    if (n.velocity < t.minVelocity) {
-                        this.stats.removed++;
-                        return false;
-                    }
-                    return true;
-                });
-            }
-
-            mergeNotes(notes) {
-                const sorted = [...notes].sort((a, b) => a.start - b.start || a.note - b.note);
-                const result = [];
-                let i = 0;
-                
-                while (i < sorted.length) {
-                    let current = { ...sorted[i] };
-                    let j = i + 1;
-                    
-                    while (j < sorted.length) {
-                        const next = sorted[j];
-                        const gap = next.start - current.end;
-                        
-                        if (next.note === current.note && gap > 0 && gap < 80) {
-                            current.end = next.end;
-                            current.duration = current.end - current.start;
-                            current.velocity = Math.max(current.velocity, next.velocity);
-                            this.stats.merged++;
-                            j++;
-                        } else {
-                            break;
-                        }
-                    }
-                    
-                    result.push(current);
-                    i = j;
-                }
-                
-                return result;
-            }
-
-            separateVoices(notes) {
-                // Group by track and channel
-                const voices = new Map();
-                for (const n of notes) {
-                    const key = `${n.track || 0}|${n.channel || 0}`;
-                    if (!voices.has(key)) voices.set(key, []);
-                    voices.get(key).push(n);
-                }
-                return notes; // Return all notes, voices stored for reference
-            }
-
-            repairPhrases(notes) {
-                // Detect phrase gaps and smooth transitions
-                const sorted = [...notes].sort((a, b) => a.start - b.start);
-                const result = [];
-                let currentPhrase = [];
-                let lastEnd = 0;
-                
-                for (const n of sorted) {
-                    if (currentPhrase.length > 0 && n.start - lastEnd > 300) {
-                        // End of phrase - check if we need to fill
-                        if (currentPhrase.length > 1) {
-                            result.push(...currentPhrase);
-                        }
-                        currentPhrase = [];
-                    }
-                    currentPhrase.push(n);
-                    lastEnd = n.end || n.start + 240;
-                }
-                
-                if (currentPhrase.length > 0) result.push(...currentPhrase);
-                
-                // Ensure no gaps between phrases
-                // (Conservative - only merge if same instrument)
-                return result;
-            }
-
-            repairPitchFlicker(notes) {
-                const result = [];
-                let i = 0;
-                
-                while (i < notes.length) {
-                    const current = notes[i];
-                    const next = notes[i + 1];
-                    const next2 = notes[i + 2];
-                    
-                    if (next && next2) {
-                        const close1 = Math.abs(next.start - current.end) < 60;
-                        const close2 = Math.abs(next2.start - next.end) < 60;
-                        const samePitch = current.note === next2.note;
-                        const diff = Math.abs(next.note - current.note) === 1;
-                        
-                        if (close1 && close2 && samePitch && diff) {
-                            const merged = {
-                                ...current,
-                                end: next2.end,
-                                duration: next2.end - current.start,
-                                velocity: Math.max(current.velocity, next2.velocity),
-                            };
-                            result.push(merged);
-                            this.stats.corrected++;
-                            i += 3;
-                            continue;
-                        }
-                    }
-                    
-                    result.push(current);
-                    i++;
-                }
-                
-                return result;
-            }
-
-            // Moves any note outside the chosen scale to the nearest in-scale pitch.
-            // Unlike the other modules this deliberately changes pitch content, so it
-            // only ever runs when explicitly enabled with a chosen root.
-            correctToKey(notes, keyRoot, scaleType) {
-                const scales = {
-                    major: [0, 2, 4, 5, 7, 9, 11],
-                    naturalMinor: [0, 2, 3, 5, 7, 8, 10],
-                    harmonicMinor: [0, 2, 3, 5, 7, 8, 11],
-                    melodicMinor: [0, 2, 3, 5, 7, 9, 11],
-                };
-                const scale = scales[scaleType] || scales.major;
-                const inScale = new Set(scale.map(iv => (iv + keyRoot) % 12));
-
-                return notes.map(n => {
-                    const pc = ((n.note % 12) + 12) % 12;
-                    if (inScale.has(pc)) return n;
-
-                    // Search outward for the nearest in-scale pitch class. On a tie
-                    // (equally close above and below), prefer moving up.
-                    let shift = 0;
-                    for (let d = 1; d <= 6; d++) {
-                        const up = (pc + d) % 12;
-                        const down = ((pc - d) % 12 + 12) % 12;
-                        if (inScale.has(up)) { shift = d;
-                            break; }
-                        if (inScale.has(down)) { shift = -d;
-                            break; }
-                    }
-
-                    const newNote = Math.min(127, Math.max(0, n.note + shift));
-                    this.stats.corrected++;
-                    this.stats.keyCorrected++;
-                    return { ...n, note: newNote, keyCorrected: true };
-                });
-            }
-
-            repairTiming(notes) {
-                // Quantise to nearest 16th note
-                const grid = 240; // 16th note at 480ppq
-                const strength = 0.5;
-                
-                return notes.map(n => {
-                    const qStart = Math.round(n.start / grid) * grid;
-                    const offset = (qStart - n.start) * strength;
-                    return {
-                        ...n,
-                        start: Math.round(n.start + offset),
-                        end: Math.round((n.end || n.start + 240) + offset),
-                        duration: n.duration,
-                    };
-                });
-            }
-
-            smoothVelocity(notes) {
-                const windowSize = 5;
-                const velocities = notes.map(n => n.velocity);
-                
-                return notes.map((n, i) => {
-                    let sum = 0;
-                    let count = 0;
-                    const start = Math.max(0, i - windowSize);
-                    const end = Math.min(notes.length, i + windowSize + 1);
-                    
-                    for (let j = start; j < end; j++) {
-                        sum += velocities[j];
-                        count++;
-                    }
-                    
-                    const avg = Math.round(sum / count);
-                    const newVel = Math.round(n.velocity * 0.6 + avg * 0.4);
-                    return { ...n, velocity: Math.min(127, Math.max(1, newVel)) };
-                });
-            }
-
-            repairChords(notes, confidenceMap) {
-                // Restoration must never add chord tones that were not present in the source.
-                // Keep this module diagnostic-only until a non-generative repair rule is available.
-                return notes.map(n => ({ ...n }));
-            }
-
-            applyAudioConfidence(notes, confidenceMap) {
-                // Remove notes with very low confidence
-                return notes.filter(n => {
-                    const conf = confidenceMap.get(n.id || n) || 50;
-                    if (conf < 20) {
-                        this.stats.removed++;
-                        return false;
-                    }
-                    return true;
-                });
-            }
-
-            getStats() {
-                return this.stats;
-            }
-        }
-
-        // ============================================================
-        // 5. VALIDATION ENGINE
-        // ============================================================
-
-        class ValidationEngine {
-            static validate(originalNotes, cleanedNotes, tempoMap, ppq, originalMaxTime = null) {
-                const errors = [];
-                const warnings = [];
-                const sourceEnd = originalMaxTime ?? (originalNotes.length
-                    ? Math.max(...originalNotes.map(n => n.end ?? (n.start + 1))) : 0);
-                const cleanedEnd = cleanedNotes.length
-                    ? Math.max(...cleanedNotes.map(n => n.end ?? (n.start + 1))) : 0;
-
-                // A restoration may shorten a damaged final note. It must not create material beyond the source.
-                if (cleanedEnd > sourceEnd + Math.max(10, Math.round(ppq * 0.05))) {
-                    errors.push(`Restoration extends beyond source: ${sourceEnd} → ${cleanedEnd} ticks`);
-                } else if (cleanedEnd !== sourceEnd) {
-                    warnings.push(`Last sounding note changed: ${sourceEnd} → ${cleanedEnd} ticks; export keeps the original end-of-track time`);
-                }
-
-                const hanging = cleanedNotes.filter(n => n.hanging);
-                if (hanging.length) errors.push(`${hanging.length} hanging notes remain`);
-
-                const seen = new Set();
-                let duplicates = 0;
-                for (const n of cleanedNotes) {
-                    const key = `${n.track || 0}|${n.channel || 0}|${n.note}|${Math.round(n.start)}|${Math.round(n.end)}`;
-                    if (seen.has(key)) duplicates++;
-                    else seen.add(key);
-                }
-                if (duplicates) errors.push(`${duplicates} exact duplicate notes found`);
-
-                const invalidDuration = cleanedNotes.filter(n =>
-                    !Number.isFinite(n.start) || !Number.isFinite(n.end) || n.end <= n.start
-                );
-                if (invalidDuration.length) errors.push(`${invalidDuration.length} notes have invalid duration`);
-
-                const outOfRange = cleanedNotes.filter(n => !Number.isInteger(n.note) || n.note < 0 || n.note > 127);
-                if (outOfRange.length) errors.push(`${outOfRange.length} notes outside MIDI range`);
-
-                return { passed: errors.length === 0, errors, warnings, sourceEnd, cleanedEnd };
-            }
-        }
-
-        // ============================================================
-        // 6. UI INTEGRATION
-        // ============================================================
-
-        // ---- File handling ----
         function initFileHandling() {
             const midiDrop = $('midiDropZone');
             const audioDrop = $('audioDropZone');
@@ -1656,7 +1178,7 @@
                 showModal('Invalid File', 'Please select a MIDI file (.mid or .midi)');
                 return;
             }
-            
+
             const reader = new FileReader();
             reader.onload = function(e) {
                 try {
@@ -1666,6 +1188,16 @@
                     midiNameEl.textContent = file.name;
                     midiNameEl.style.display = 'block';
                     state.midiData = e.target.result;
+
+                    // Build song structure
+                    state.song = {
+                        format: result.format,
+                        ppq: result.ppq,
+                        tracks: result.tracks.map(t => ({ events: t.events, endTick: t.endTick, maxTime: t.maxTime })),
+                        tempoMap: result.tempoMap,
+                        timeSignatures: result.timeSignatures,
+                        keySignatures: result.keySignatures,
+                    };
                     state.notes = result.notes;
                     state.originalNotes = result.notes.map(n => ({ ...n }));
                     state.cleanedNotes = [];
@@ -1674,31 +1206,29 @@
                     state.tempoMap = result.tempoMap;
                     state.timeSignatures = result.timeSignatures;
                     state.keySignatures = result.keySignatures;
-                    state.tracks = result.tracks;
                     state.duration = result.duration;
                     state.originalMaxTime = result.maxTime;
-                    
+                    state.noteIdCounter = result.noteIdCounter || 0;
+
                     if (result.tempoMap.length > 0) {
                         state.detectedTempo = 60000000 / result.tempoMap[0].tempo;
                     }
-                    
-                    // Auto-detect tempo from notes if not available
+
                     if (!state.detectedTempo || state.detectedTempo < 30) {
                         state.detectedTempo = AnalysisEngine.detectTempo(state.notes, state.ppq);
                     }
-                    
+
                     updateFileInfo(file);
                     $('analyzeBtn').disabled = false;
                     $('restoreBtn').disabled = false;
                     $('previewBtn').disabled = true;
                     $('exportBtn').disabled = true;
-                    
+
                     setStatus(`✅ MIDI loaded: ${file.name} (${result.notes.length} notes)`, 'success');
                     renderPianoRoll();
-                    
-                    // Auto-analyze
+
                     runAnalysis();
-                    
+
                 } catch (err) {
                     showModal('Error', `Failed to load MIDI: ${err.message}`);
                     console.error(err);
@@ -1732,7 +1262,7 @@
 
         async function decodeAudio(arrayBuffer) {
             if (!state.audioContext) {
-                state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                state.audioContext = new(window.AudioContext || window.webkitAudioContext)();
             }
 
             try {
@@ -1740,14 +1270,13 @@
                 state.audioBuffer = audioBuffer;
                 state.audioData = audioBuffer.getChannelData(0);
                 state.sampleRate = audioBuffer.sampleRate;
-                
-                // Simple audio analysis
+
                 await analyzeAudio(state.audioData, state.sampleRate);
                 drawWaveform(state.audioData);
-                
+
                 updateAudioStatus(`✅ Audio analysed: ${state.sampleRate}Hz`);
                 updateFileStatus();
-                
+
                 if (state.notes.length > 0) {
                     buildConfidenceMap();
                 }
@@ -1757,303 +1286,476 @@
             }
         }
 
-        // In-place iterative radix-2 Cooley-Tukey FFT. re/im are Float64Arrays of
-        // equal power-of-two length. O(n log n) instead of the previous O(n) per
-        // bin per frame DFT, which is what makes analysing a whole recording
-        // (rather than ~1 second of it) fast enough to run in the browser.
-        function fft(re, im) {
-            const n = re.length;
-            for (let i = 1, j = 0; i < n; i++) {
-                let bit = n >> 1;
-                for (; j & bit; bit >>= 1) j ^= bit;
-                j ^= bit;
-                if (i < j) {
-                    [re[i], re[j]] = [re[j], re[i]];
-                    [im[i], im[j]] = [im[j], im[i]];
-                }
-            }
-            for (let len = 2; len <= n; len <<= 1) {
-                const ang = -2 * Math.PI / len;
-                const wr = Math.cos(ang), wi = Math.sin(ang);
-                for (let i = 0; i < n; i += len) {
-                    let curWr = 1, curWi = 0;
-                    for (let j = 0; j < len / 2; j++) {
-                        const ur = re[i + j], ui = im[i + j];
-                        const vr = re[i + j + len / 2] * curWr - im[i + j + len / 2] * curWi;
-                        const vi = re[i + j + len / 2] * curWi + im[i + j + len / 2] * curWr;
-                        re[i + j] = ur + vr; im[i + j] = ui + vi;
-                        re[i + j + len / 2] = ur - vr; im[i + j + len / 2] = ui - vi;
-                        const nWr = curWr * wr - curWi * wi;
-                        const nWi = curWr * wi + curWi * wr;
-                        curWr = nWr; curWi = nWi;
+        // ============================================================
+        // 4. Analysis Engine (unchanged, but uses notes)
+        // ============================================================
+
+        class AnalysisEngine {
+            static analyze(notes, ppq, tempoMap) {
+                const stats = {
+                    noteCount: notes.length,
+                    duplicates: 0,
+                    overlaps: 0,
+                    hanging: 0,
+                    outOfRange: 0,
+                    minNote: 128,
+                    maxNote: 0,
+                    avgVelocity: 0,
+                    avgDuration: 0,
+                    velocityHistogram: new Array(128).fill(0),
+                    pitchHistogram: new Array(128).fill(0),
+                    confidence: 0,
+                    issues: [],
+                };
+
+                if (notes.length === 0) return stats;
+
+                const seen = new Set();
+                let totalVelocity = 0;
+                let totalDuration = 0;
+
+                for (const n of notes) {
+                    if (n.note < stats.minNote) stats.minNote = n.note;
+                    if (n.note > stats.maxNote) stats.maxNote = n.note;
+                    stats.pitchHistogram[n.note] = (stats.pitchHistogram[n.note] || 0) + 1;
+                    stats.velocityHistogram[n.velocity] = (stats.velocityHistogram[n.velocity] || 0) + 1;
+                    totalVelocity += n.velocity;
+                    totalDuration += n.duration || 240;
+
+                    const key = `${n.track || 0}|${n.channel || 0}|${n.note}|${Math.round(n.start)}|${Math.round(n.end)}`;
+                    if (seen.has(key)) stats.duplicates++;
+                    else seen.add(key);
+
+                    if (n.hanging) stats.hanging++;
+                    if (n.note < 21 || n.note > 108) stats.outOfRange++;
+
+                    for (const other of notes) {
+                        if (n === other) continue;
+                        if (n.note === other.note &&
+                            n.start < other.end &&
+                            other.start < n.end) {
+                            stats.overlaps++;
+                            break;
+                        }
                     }
                 }
-            }
-        }
 
-        // Converts a MIDI tick position to seconds by integrating the tempo map,
-        // so notes can be aligned against the audio timeline (which is in seconds).
-        function ticksToSeconds(ticks, ppq, tempoMap) {
-            if (!tempoMap || !tempoMap.length) return (ticks / (ppq || 480)) * 0.5;
-            let seconds = 0, lastTick = 0, tempo = tempoMap[0].tempo || 500000;
-            for (const t of tempoMap) {
-                if (t.time >= ticks) break;
-                seconds += ((t.time - lastTick) / (ppq || 480)) * (tempo / 1000000);
-                lastTick = t.time;
-                tempo = t.tempo || tempo;
-            }
-            seconds += ((ticks - lastTick) / (ppq || 480)) * (tempo / 1000000);
-            return seconds;
-        }
+                stats.avgVelocity = Math.round(totalVelocity / notes.length);
+                stats.avgDuration = Math.round(totalDuration / notes.length);
 
-        function detectKeyFromPitchClass(values) {
-            if (!values || values.length < 12) return null;
-            const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-            const majorProfile = [6.35,2.23,3.48,2.33,4.38,4.09,2.52,5.19,2.39,3.66,2.29,2.88];
-            const minorProfile = [6.33,2.68,3.52,5.38,2.60,3.53,2.54,4.75,3.98,2.69,3.34,3.17];
-            const corr = (a, b) => {
-                const am = a.reduce((x,y)=>x+y,0)/a.length;
-                const bm = b.reduce((x,y)=>x+y,0)/b.length;
-                let num=0, da=0, db=0;
-                for (let i=0;i<a.length;i++) { const x=a[i]-am, y=b[i]-bm; num+=x*y; da+=x*x; db+=y*y; }
-                return num / (Math.sqrt(da*db) || 1);
-            };
-            let best = null;
-            for (let root=0; root<12; root++) {
-                for (const [mode, profile] of [['major', majorProfile], ['minor', minorProfile]]) {
-                    const rotated = values.map((_, i) => profile[(i-root+12)%12]);
-                    const score = corr(values, rotated);
-                    if (!best || score > best.score) best = { root, rootName: noteNames[root], mode, score };
+                let confidence = 100;
+                if (stats.duplicates > 0) {
+                    confidence -= Math.min(20, stats.duplicates * 2);
+                    stats.issues.push(`${stats.duplicates} duplicate notes`);
                 }
-            }
-            return best;
-        }
-
-        function detectMIDIKey(notes) {
-            if (!notes || !notes.length) return null;
-            const pc = new Array(12).fill(0);
-            for (const n of notes) {
-                const duration = Math.max(1, (n.end ?? n.start + 1) - n.start);
-                pc[((n.note % 12)+12)%12] += duration * Math.max(1, n.velocity || 64);
-            }
-            return detectKeyFromPitchClass(pc);
-        }
-
-        async function analyzeAudio(audioData, sampleRate) {
-            const fftSize = 2048;
-            const chroma = new Array(12).fill(0);
-
-            const window = new Float64Array(fftSize);
-            for (let i = 0; i < fftSize; i++) {
-                window[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (fftSize - 1)));
-            }
-
-            // Cover the FULL recording, not just the first ~100 frames (~1.2s).
-            // Target a bounded frame count so long files stay fast, by spacing
-            // hops out rather than truncating the analysis window.
-            const targetFrames = 1200;
-            const maxStart = Math.max(0, audioData.length - fftSize);
-            const hopSize = Math.max(256, Math.floor(maxStart / targetFrames) || 256);
-            const numFrames = Math.floor(maxStart / hopSize) + 1;
-
-            const spectrogram = []; // per-frame chroma, time-aligned
-            const frameTimes = [];  // seconds, frame center
-
-            const re = new Float64Array(fftSize);
-            const im = new Float64Array(fftSize);
-
-            for (let frame = 0; frame < numFrames; frame++) {
-                const start = frame * hopSize;
-                im.fill(0);
-                for (let i = 0; i < fftSize; i++) {
-                    re[i] = (audioData[start + i] || 0) * window[i];
+                if (stats.hanging > 0) {
+                    confidence -= Math.min(15, stats.hanging * 3);
+                    stats.issues.push(`${stats.hanging} hanging notes`);
                 }
-                fft(re, im);
-
-                const frameChroma = new Array(12).fill(0);
-                for (let bin = 1; bin < fftSize / 2; bin++) {
-                    const freq = bin * sampleRate / fftSize;
-                    if (freq < 50 || freq > 2000) continue;
-
-                    const midiNote = 69 + 12 * Math.log2(freq / 440);
-                    const chromaBin = Math.round(midiNote) % 12;
-                    const mag = Math.hypot(re[bin], im[bin]);
-                    frameChroma[chromaBin] += mag;
+                if (stats.overlaps > 0) {
+                    confidence -= Math.min(20, stats.overlaps);
+                    stats.issues.push(`${stats.overlaps} overlapping notes`);
+                }
+                if (stats.outOfRange > 0) {
+                    confidence -= Math.min(15, stats.outOfRange * 2);
+                    stats.issues.push(`${stats.outOfRange} notes outside piano range`);
+                }
+                if (notes.length < 10) {
+                    confidence -= 10;
+                    stats.issues.push('Very few notes detected');
                 }
 
-                // Normalise within the frame so louder/quieter passages remain
-                // comparable — global normalisation would let one loud passage
-                // suppress the perceived support for everything else.
-                const frameMax = Math.max(...frameChroma);
-                if (frameMax > 0) {
-                    for (let i = 0; i < 12; i++) frameChroma[i] /= frameMax;
-                }
-
-                for (let i = 0; i < 12; i++) chroma[i] += frameChroma[i];
-                spectrogram.push(frameChroma);
-                frameTimes.push((start + fftSize / 2) / sampleRate);
+                stats.confidence = Math.max(0, Math.min(100, confidence));
+                return stats;
             }
 
-            // Normalize chromagram (used for key detection only)
-            const max = Math.max(...chroma);
-            if (max > 0) {
-                for (let i = 0; i < 12; i++) chroma[i] /= max;
-            }
-
-            state.chromagram = chroma;
-            state.spectrogram = spectrogram;
-            state.frameTimes = frameTimes;
-            
-            // Detect both major and minor keys with Krumhansl-Schmuckler profiles.
-            const audioKey = detectKeyFromPitchClass(chroma);
-            state.audioDetectedKey = audioKey;
-            state.detectedKey = audioKey;
-            $('audioKeyDisplay').textContent = audioKey ? `${audioKey.rootName} ${audioKey.mode}` : '—';
-            const detectBtn = $('useDetectedKeyBtn');
-            if (audioKey) {
-                detectBtn.textContent = `Use WAV key: ${audioKey.rootName} ${audioKey.mode}`;
-                detectBtn.style.display = 'block';
-            }
-            
-            // Simple beat detection
-            detectBeats(audioData, sampleRate);
-        }
-
-        function useDetectedKey() {
-            const detected = state.audioDetectedKey || state.midiDetectedKey || state.detectedKey;
-            if (!detected) return;
-            $('keyRootSelect').value = String(detected.root);
-            $('keyScaleSelect').value = detected.mode === 'minor' ? 'naturalMinor' : 'major';
-            $('keyModuleCheckbox').checked = true;
-            setStatus(`Key snap enabled: ${detected.rootName} ${detected.mode}`, '');
-        }
-
-        function detectBeats(audioData, sampleRate) {
-            const onsets = [];
-            const windowSize = 1024;
-            const hopSize = 256;
-            
-            for (let i = windowSize; i < audioData.length - windowSize; i += hopSize) {
-                let energy = 0;
-                let prevEnergy = 0;
-                for (let j = 0; j < windowSize; j++) {
-                    energy += audioData[i + j] * audioData[i + j];
-                    prevEnergy += audioData[i - windowSize + j] * audioData[i - windowSize + j];
-                }
-                const ratio = energy / (prevEnergy + 0.0001);
-                if (ratio > 2.0 && energy > 0.01) {
-                    onsets.push(i / sampleRate);
-                }
-            }
-            
-            state.onsets = onsets;
-            
-            // Simple beat detection
-            if (onsets.length > 4) {
+            static detectTempo(notes, ppq) {
+                if (notes.length < 4) return 120;
                 const intervals = [];
-                for (let i = 1; i < Math.min(onsets.length, 30); i++) {
-                    intervals.push(onsets[i] - onsets[i-1]);
+                for (let i = 1; i < Math.min(notes.length, 50); i++) {
+                    const gap = notes[i].start - notes[i - 1].start;
+                    if (gap > 0 && gap < 2000) intervals.push(gap);
                 }
+                if (intervals.length < 2) return 120;
                 intervals.sort((a, b) => a - b);
                 const median = intervals[Math.floor(intervals.length / 2)];
-                if (median > 0.2 && median < 2) {
-                    state.beats = onsets.filter((_, i) => i % Math.round(median / 0.5) === 0);
-                }
+                const bpm = 60 / (median / ppq * 0.5);
+                return Math.round(Math.max(40, Math.min(250, bpm)));
             }
         }
 
-        function buildConfidenceMap() {
-            if (!state.notes.length || !state.audioData) return;
-            
-            state.confidenceMap.clear();
-            state.confidenceExplanations.clear();
-            
-            const key = state.detectedKey || 'C';
-            const keyRoot = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'].indexOf(key);
-            const spectrogram = state.spectrogram || [];
-            const frameTimes = state.frameTimes || [];
-            const ppq = state.ppq || 480;
-            const tempoMap = state.tempoMap;
+        // ============================================================
+        // 5. Restoration Engine - Smarter (v5.1C)
+        // ============================================================
 
-            for (const note of state.notes) {
-                let confidence = 50;
-                const reasons = [];
-                
-                // 1. Audio support — sample the chroma frames that overlap this
-                // note's actual playback window (converted from ticks to seconds
-                // via the tempo map), not a single global average taken from the
-                // start of the recording. A note late in a long piece must be
-                // checked against what the audio was doing at that moment.
-                const noteBin = note.note % 12;
-                let support = 0;
-                if (spectrogram.length && frameTimes.length) {
-                    const tStart = ticksToSeconds(note.start, ppq, tempoMap);
-                    const tEnd = ticksToSeconds(note.end ?? (note.start + 1), ppq, tempoMap);
-                    let sum = 0, count = 0;
-                    for (let i = 0; i < frameTimes.length; i++) {
-                        if (frameTimes[i] >= tStart && frameTimes[i] <= tEnd) {
-                            sum += spectrogram[i][noteBin] || 0;
-                            count++;
-                        }
-                    }
-                    if (!count) {
-                        // Short note between frame samples — use the nearest frame.
-                        let nearest = 0, best = Infinity;
-                        for (let i = 0; i < frameTimes.length; i++) {
-                            const d = Math.abs(frameTimes[i] - tStart);
-                            if (d < best) { best = d;
-                                nearest = i; }
-                        }
-                        sum = spectrogram[nearest][noteBin] || 0;
-                        count = 1;
-                    }
-                    support = sum / count;
-                }
-                confidence += support * 25;
-                if (support > 0.3) reasons.push('audio support');
-                
-                // 2. Key membership
-                if (keyRoot >= 0) {
-                    const scale = [0, 2, 4, 5, 7, 9, 11];
-                    if (scale.includes((noteBin - keyRoot + 12) % 12)) {
-                        confidence += 15;
-                        reasons.push('in key');
-                    }
-                }
-                
-                // 3. Duration
-                const duration = note.duration || 240;
-                if (duration > 60) confidence += 10;
-                else if (duration < 30) { confidence -= 15;
-                    reasons.push('very short'); }
-                else { confidence -= 5;
-                    reasons.push('short'); }
-                
-                // 4. Velocity
-                if (note.velocity > 10 && note.velocity < 120) confidence += 10;
-                else if (note.velocity < 5) { confidence -= 10;
-                    reasons.push('low velocity'); }
-                
-                // 5. Range
-                if (note.note >= 21 && note.note <= 108) confidence += 5;
-                else { confidence -= 10;
-                    reasons.push('out of range'); }
-                
-                // 6. Hanging
-                if (note.hanging) { confidence -= 15;
-                    reasons.push('hanging note'); }
-                
-                confidence = Math.max(0, Math.min(100, Math.round(confidence)));
-                state.confidenceMap.set(note.id || note, confidence);
-                state.confidenceExplanations.set(note.id || note, reasons);
+        class RestorationEngine {
+            constructor(notes, ppq, tempoMap, originalMaxTime = null) {
+                this.originalNotes = notes.map(n => ({ ...n }));
+                this.notes = notes.map(n => ({ ...n }));
+                this.ppq = ppq;
+                this.tempoMap = tempoMap;
+                this.originalMaxTime = originalMaxTime ?? (notes.length ? Math.max(...notes.map(n => n.end ?? (n.start +
+                    1))) : 0);
+                this.stats = { removed: 0, merged: 0, repaired: 0, corrected: 0, keyCorrected: 0 };
+                this.audit = [];
             }
-            
-            const avg = Array.from(state.confidenceMap.values()).reduce((a, b) => a + b, 0) / state.confidenceMap.size;
-            state.confidenceScore = Math.round(avg || 0);
-            updateConfidenceRing(state.confidenceScore);
+
+            restore(modules, instrument, confidenceMap, keyRoot = null, keyScale = 'major') {
+                let result = this.originalNotes.map(n => ({ ...n }));
+                this.stats = { removed: 0, merged: 0, repaired: 0, corrected: 0, keyCorrected: 0 };
+                this.audit = [];
+
+                // Sustain pedal awareness: collect pedal events from track events? We don't have track events here.
+                // We'll approximate by checking for notes that overlap with a sustain pedal – we don't have pedal data,
+                // so we'll skip that enhancement in this version.
+
+                if (modules.duplicate) result = this.removeDuplicates(result);
+                if (modules.hanging) result = this.repairHanging(result);
+                if (modules.overlap) result = this.repairOverlaps(result);
+                if (modules.ghost) result = this.removeGhosts(result, instrument);
+                if (modules.merge) result = this.mergeNotes(result);
+                if (modules.voice) result = this.separateVoices(result);
+                if (modules.phrase) result = this.repairPhrases(result);
+                if (modules.pitch) result = this.repairPitchFlicker(result);
+                if (modules.key && keyRoot !== null && keyRoot !== '') result = this.correctToKey(result, parseInt(
+                    keyRoot, 10), keyScale);
+                if (modules.timing) { result = this.repairTiming(result); if (modules.overlap) result = this.repairOverlaps(result); }
+                if (modules.velocity) result = this.smoothVelocity(result);
+                if (modules.chord) result = this.repairChords(result, confidenceMap);
+                if (modules.audio && confidenceMap) result = this.applyAudioConfidence(result, confidenceMap);
+
+                // Clamp to original max time
+                if (this.originalMaxTime > 0) {
+                    const limit = this.originalMaxTime;
+                    result = result.map(n => {
+                        if (n.end > limit) {
+                            const clampedEnd = Math.max(n.start + 1, limit);
+                            this.stats.corrected++;
+                            return { ...n, end: clampedEnd, duration: clampedEnd - n.start };
+                        }
+                        return n;
+                    });
+                }
+
+                result.sort((a, b) => a.start - b.start);
+                return result;
+            }
+
+            // ---- Module implementations (mostly unchanged from previous) ----
+            removeDuplicates(notes) {
+                const seen = new Set();
+                const result = [];
+                for (const n of notes) {
+                    const key = `${n.note}|${Math.round(n.start)}|${Math.round(n.end)}`;
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        result.push(n);
+                    } else {
+                        this.stats.removed++;
+                        this.audit.push({ type: 'duplicate', note: n, removed: true });
+                    }
+                }
+                return result;
+            }
+
+            repairHanging(notes) {
+                return notes.map(n => {
+                    if (n.hanging) {
+                        n.end = n.start + 240;
+                        n.duration = 240;
+                        n.hanging = false;
+                        this.stats.repaired++;
+                        this.audit.push({ type: 'hanging', note: n, repaired: true });
+                    }
+                    return n;
+                });
+            }
+
+            repairOverlaps(notes) {
+                const sorted = notes.map(n => ({ ...n })).sort((a, b) =>
+                    a.track - b.track || a.channel - b.channel || a.note - b.note || a.start - b.start
+                );
+                const lastByKey = new Map();
+                const result = [];
+
+                for (const n of sorted) {
+                    const key = `${n.track || 0}|${n.channel || 0}|${n.note}`;
+                    const previous = lastByKey.get(key);
+                    if (previous && previous.end > n.start) {
+                        previous.end = Math.max(previous.start + 1, n.start);
+                        previous.duration = previous.end - previous.start;
+                        this.stats.repaired++;
+                        this.audit.push({ type: 'overlap', note: n, repaired: true });
+                    }
+                    n.end = Math.max(n.start + 1, n.end ?? (n.start + Math.max(1, n.duration || 1)));
+                    n.duration = n.end - n.start;
+                    result.push(n);
+                    lastByKey.set(key, n);
+                }
+                return result.sort((a, b) => a.start - b.start || a.note - b.note);
+            }
+
+            removeGhosts(notes, instrument) {
+                const thresholds = {
+                    piano: { minDuration: 60, minVelocity: 8 },
+                    guitar: { minDuration: 50, minVelocity: 10 },
+                    bass: { minDuration: 80, minVelocity: 12 },
+                    strings: { minDuration: 100, minVelocity: 10 },
+                    vocals: { minDuration: 120, minVelocity: 10 },
+                    drums: { minDuration: 30, minVelocity: 15 },
+                    auto: { minDuration: 60, minVelocity: 8 },
+                };
+                const t = thresholds[instrument] || thresholds.piano;
+                return notes.filter(n => {
+                    const duration = n.duration || 240;
+                    if (duration < t.minDuration) {
+                        this.stats.removed++;
+                        this.audit.push({ type: 'ghost', note: n, removed: true });
+                        return false;
+                    }
+                    if (n.velocity < t.minVelocity) {
+                        this.stats.removed++;
+                        this.audit.push({ type: 'ghost', note: n, removed: true });
+                        return false;
+                    }
+                    return true;
+                });
+            }
+
+            mergeNotes(notes) {
+                const sorted = [...notes].sort((a, b) => a.start - b.start || a.note - b.note);
+                const result = [];
+                let i = 0;
+                while (i < sorted.length) {
+                    let current = { ...sorted[i] };
+                    let j = i + 1;
+                    while (j < sorted.length) {
+                        const next = sorted[j];
+                        const gap = next.start - current.end;
+                        if (next.track === current.track && next.channel === current.channel && next.note === current.note && gap > 0 && gap < 80) {
+                            current.end = next.end;
+                            current.duration = current.end - current.start;
+                            current.velocity = Math.max(current.velocity, next.velocity);
+                            this.stats.merged++;
+                            this.audit.push({ type: 'merge', note: next, merged: true });
+                            j++;
+                        } else {
+                            break;
+                        }
+                    }
+                    result.push(current);
+                    i = j;
+                }
+                return result;
+            }
+
+            separateVoices(notes) {
+                // Group by track/channel – functional voice separation
+                const voices = new Map();
+                for (const n of notes) {
+                    const key = `${n.track || 0}|${n.channel || 0}`;
+                    if (!voices.has(key)) voices.set(key, []);
+                    voices.get(key).push(n);
+                }
+                // Store for later (maybe UI)
+                state.voices = Array.from(voices.values());
+                return notes;
+            }
+
+            repairPhrases(notes) {
+                const sorted = [...notes].sort((a, b) => a.track - b.track || a.channel - b.channel || a.start - b.start);
+                const groups = [];
+                let phrase = [];
+                let previous = null;
+                const gapLimit = Math.max(1, Math.round(this.ppq * 0.75));
+                for (const n of sorted) {
+                    const sameVoice = previous && n.track === previous.track && n.channel === previous.channel;
+                    if (phrase.length && (!sameVoice || n.start - previous.end > gapLimit)) {
+                        groups.push(phrase);
+                        phrase = [];
+                    }
+                    phrase.push(n);
+                    previous = n;
+                }
+                if (phrase.length) groups.push(phrase);
+                state.phrases = groups;
+                return notes;
+            }
+
+            repairPitchFlicker(notes) {
+                const byVoice = new Map();
+                for (const n of notes) {
+                    const key = `${n.track || 0}|${n.channel || 0}`;
+                    if (!byVoice.has(key)) byVoice.set(key, []);
+                    byVoice.get(key).push(n);
+                }
+                const result = [];
+                const threshold = Math.max(1, Math.round(this.ppq / 8));
+                for (const voice of byVoice.values()) {
+                    voice.sort((a, b) => a.start - b.start || a.note - b.note);
+                    let i = 0;
+                    while (i < voice.length) {
+                        const a = voice[i], b = voice[i + 1], c = voice[i + 2];
+                        if (b && c && Math.abs(b.start - a.end) < threshold && Math.abs(c.start - b.end) < threshold && a.note === c.note && Math.abs(b.note - a.note) === 1) {
+                            const merged = { ...a, end: c.end, duration: c.end - a.start, velocity: Math.max(a.velocity, c.velocity) };
+                            result.push(merged);
+                            this.stats.corrected++;
+                            this.audit.push({ type: 'pitch_flicker', note: merged, corrected: true });
+                            i += 3;
+                        } else {
+                            result.push(a);
+                            i++;
+                        }
+                    }
+                }
+                return result.sort((a, b) => a.start - b.start || a.track - b.track || a.channel - b.channel || a.note - b.note);
+            }
+
+            correctToKey(notes, keyRoot, scaleType) {
+                const scales = {
+                    major: [0, 2, 4, 5, 7, 9, 11],
+                    naturalMinor: [0, 2, 3, 5, 7, 8, 10],
+                    harmonicMinor: [0, 2, 3, 5, 7, 8, 11],
+                    melodicMinor: [0, 2, 3, 5, 7, 9, 11],
+                };
+                const scale = scales[scaleType] || scales.major;
+                const inScale = new Set(scale.map(iv => (iv + keyRoot) % 12));
+
+                return notes.map(n => {
+                    const pc = ((n.note % 12) + 12) % 12;
+                    if (inScale.has(pc)) return n;
+                    let shift = 0;
+                    for (let d = 1; d <= 6; d++) {
+                        const up = (pc + d) % 12;
+                        const down = ((pc - d) % 12 + 12) % 12;
+                        if (inScale.has(up)) { shift = d; break; }
+                        if (inScale.has(down)) { shift = -d; break; }
+                    }
+                    const newNote = Math.min(127, Math.max(0, n.note + shift));
+                    this.stats.corrected++;
+                    this.stats.keyCorrected++;
+                    this.audit.push({ type: 'key_correction', note: n, corrected: true, newNote });
+                    return { ...n, note: newNote, keyCorrected: true };
+                });
+            }
+
+            repairTiming(notes) {
+                const grid = Math.max(1, Math.round(this.ppq / 4));
+                const strength = 0.5;
+                return notes.map(n => {
+                    const qStart = Math.round(n.start / grid) * grid;
+                    const offset = (qStart - n.start) * strength;
+                    return {
+                        ...n,
+                        start: Math.round(n.start + offset),
+                        end: Math.round((n.end || n.start + 240) + offset),
+                        duration: n.duration,
+                    };
+                });
+            }
+
+            smoothVelocity(notes) {
+                const windowSize = 5;
+                const velocities = notes.map(n => n.velocity);
+                return notes.map((n, i) => {
+                    let sum = 0,
+                        count = 0;
+                    const start = Math.max(0, i - windowSize);
+                    const end = Math.min(notes.length, i + windowSize + 1);
+                    for (let j = start; j < end; j++) { sum += velocities[j];
+                        count++; }
+                    const avg = Math.round(sum / count);
+                    const newVel = Math.round(n.velocity * 0.6 + avg * 0.4);
+                    return { ...n, velocity: Math.min(127, Math.max(1, newVel)) };
+                });
+            }
+
+            repairChords(notes, confidenceMap) {
+                // Diagnostic only – no generative changes
+                return notes;
+            }
+
+            applyAudioConfidence(notes, confidenceMap) {
+                return notes.map(n => {
+                    const conf = confidenceMap.get(n.id ?? n) ?? 50;
+                    if (conf < 20) {
+                        return { ...n, lowConfidence: true, audioConfidence: conf };
+                    }
+                    return { ...n, audioConfidence: conf };
+                });
+            }
+
+            getStats() { return this.stats; }
+            getAudit() { return this.audit; }
         }
 
-        // ---- Analysis ----
+        // ============================================================
+        // 6. Validation Engine (v5.1E)
+        // ============================================================
+
+        class ValidationEngine {
+            static validate(originalNotes, cleanedNotes, tempoMap, ppq, originalMaxTime = null) {
+                const errors = [];
+                const warnings = [];
+                const sourceEnd = originalMaxTime ?? (originalNotes.length ? Math.max(...originalNotes.map(n => n.end ??
+                    (n.start + 1))) : 0);
+                const cleanedEnd = cleanedNotes.length ? Math.max(...cleanedNotes.map(n => n.end ?? (n.start + 1))) : 0;
+
+                if (cleanedEnd > sourceEnd + Math.max(10, Math.round(ppq * 0.05))) {
+                    errors.push(`Restoration extends beyond source: ${sourceEnd} → ${cleanedEnd} ticks`);
+                } else if (cleanedEnd !== sourceEnd) {
+                    warnings.push(`Last sounding note changed: ${sourceEnd} → ${cleanedEnd} ticks; export keeps the original end-of-track time`);
+                }
+
+                const hanging = cleanedNotes.filter(n => n.hanging);
+                if (hanging.length) errors.push(`${hanging.length} hanging notes remain`);
+
+                const seen = new Set();
+                let duplicates = 0;
+                for (const n of cleanedNotes) {
+                    const key = `${n.track || 0}|${n.channel || 0}|${n.note}|${Math.round(n.start)}|${Math.round(n.end)}`;
+                    if (seen.has(key)) duplicates++;
+                    else seen.add(key);
+                }
+                if (duplicates) errors.push(`${duplicates} exact duplicate notes found`);
+
+                const invalidDuration = cleanedNotes.filter(n => !Number.isFinite(n.start) || !Number.isFinite(n.end) || n
+                    .end <= n.start);
+                if (invalidDuration.length) errors.push(`${invalidDuration.length} notes have invalid duration`);
+
+                const outOfRange = cleanedNotes.filter(n => !Number.isInteger(n.note) || n.note < 0 || n.note > 127);
+                if (outOfRange.length) errors.push(`${outOfRange.length} notes outside MIDI range`);
+
+                // Check overlaps
+                let overlaps = 0;
+                const grouped = new Map();
+                for (const n of cleanedNotes) {
+                    const key = `${n.track || 0}|${n.channel || 0}|${n.note}`;
+                    if (!grouped.has(key)) grouped.set(key, []);
+                    grouped.get(key).push(n);
+                }
+                for (const group of grouped.values()) {
+                    group.sort((a, b) => a.start - b.start || a.end - b.end);
+                    let previous = null;
+                    for (const n of group) {
+                        if (previous && n.start < previous.end) overlaps++;
+                        if (!previous || n.end > previous.end) previous = n;
+                    }
+                }
+                if (overlaps) errors.push(`${overlaps} overlapping notes remain`);
+
+                const invalidVelocity = cleanedNotes.filter(n => !Number.isFinite(n.velocity) || n.velocity < 1 || n
+                    .velocity > 127);
+                if (invalidVelocity.length) errors.push(`${invalidVelocity.length} notes have invalid velocity`);
+
+                return { passed: errors.length === 0, errors, warnings, sourceEnd, cleanedEnd };
+            }
+        }
+
+        // ============================================================
+        // 7. UI Integration (updated)
+        // ============================================================
+
         function runAnalysis() {
             if (!state.notes || state.notes.length === 0) {
                 showModal('No Data', 'Please load a MIDI file first');
@@ -2063,37 +1765,33 @@
             setStatus('🔬 Analysing...', 'highlight');
 
             state.midiDetectedKey = detectMIDIKey(state.notes);
-            $('midiKeyDisplay').textContent = state.midiDetectedKey
-                ? `${state.midiDetectedKey.rootName} ${state.midiDetectedKey.mode}` : '—';
+            $('midiKeyDisplay').textContent = state.midiDetectedKey ? `${state.midiDetectedKey.rootName} ${state.midiDetectedKey.mode}` :
+                '—';
             if (!state.audioDetectedKey && state.midiDetectedKey) {
                 state.detectedKey = state.midiDetectedKey;
                 const detectBtn = $('useDetectedKeyBtn');
                 detectBtn.textContent = `Use MIDI key: ${state.midiDetectedKey.rootName} ${state.midiDetectedKey.mode}`;
                 detectBtn.style.display = 'block';
             }
-            
-            // Build confidence if audio available
+
             if (state.audioData) {
                 buildConfidenceMap();
             }
-            
+
             const stats = AnalysisEngine.analyze(state.notes, state.ppq, state.tempoMap);
             state.stats = stats;
-            
-            // Display statistics
+
             displayStats(stats);
             $('statsPlaceholder').style.display = 'none';
             $('statsContent').style.display = 'block';
-            
-            // Update confidence
+
             if (!state.confidenceScore) {
                 state.confidenceScore = stats.confidence;
                 updateConfidenceRing(stats.confidence);
             }
-            
-            // Update validation indicators
+
             updateValidationIndicators(stats);
-            
+
             setStatus(`✅ Analysis complete — ${stats.issues.length} issues found`, 'success');
         }
 
@@ -2117,7 +1815,6 @@
                 </div>
             `).join('');
 
-            // Issues
             if (stats.issues.length > 0) {
                 grid.innerHTML += `
                     <div style="grid-column:1/-1;margin-top:4px;border-top:1px solid var(--border-color);padding-top:4px">
@@ -2127,13 +1824,11 @@
                 `;
             }
 
-            // Recommendations
             const recs = [];
             if (stats.duplicates > 0) recs.push('Duplicate Removal');
             if (stats.hanging > 0) recs.push('Hanging Note Repair');
             if (stats.overlaps > 0) recs.push('Overlap Repair');
             if (stats.outOfRange > 0) recs.push('Pitch Flicker Repair');
-            if (stats.ghost > 0) recs.push('Ghost Note Removal');
 
             if (recs.length > 0) {
                 grid.innerHTML += `
@@ -2144,7 +1839,6 @@
             }
         }
 
-        // ---- Restoration ----
         function runRestoration() {
             if (!state.notes || state.notes.length === 0) {
                 showModal('No Data', 'Please load a MIDI file first');
@@ -2153,10 +1847,9 @@
 
             if (state.isProcessing) return;
             state.isProcessing = true;
-            
+
             setStatus('🧹 Restoring...', 'processing');
 
-            // Get enabled modules
             const checkboxes = document.querySelectorAll('#moduleGrid input[type="checkbox"]');
             const modules = {};
             checkboxes.forEach(cb => { modules[cb.dataset.module] = cb.checked; });
@@ -2171,60 +1864,53 @@
                 state.isProcessing = false;
                 return;
             }
-            
-            // Build confidence map if audio available
+
             if (modules.audio && !state.confidenceMap.size && state.audioData) {
                 buildConfidenceMap();
             }
 
-            // Run restoration
             const engine = new RestorationEngine(state.notes, state.ppq, state.tempoMap, state.originalMaxTime);
             const cleaned = engine.restore(modules, instrument, state.confidenceMap, keyRootValue, keyScaleValue);
 
             state.cleanedNotes = cleaned;
             state.isCleaned = true;
             const restorationStats = engine.getStats();
+            state.restorationAudit = engine.getAudit();
 
-            // Update confidence
             if (state.confidenceMap.size > 0) {
-                const avg = Array.from(state.confidenceMap.values()).reduce((a, b) => a + b, 0) / state.confidenceMap.size;
+                const avg = Array.from(state.confidenceMap.values()).reduce((a, b) => a + b, 0) / state.confidenceMap
+                .size;
                 state.confidenceScore = Math.round(avg);
                 updateConfidenceRing(state.confidenceScore);
             }
 
-            // Run validation
-            const validation = ValidationEngine.validate(state.originalNotes, cleaned, state.tempoMap, state.ppq, state.originalMaxTime);
+            const validation = ValidationEngine.validate(state.originalNotes, cleaned, state.tempoMap, state.ppq, state
+                .originalMaxTime);
             state.validationPassed = validation.passed;
             state.validationErrors = validation.errors;
-
-            // Update validation badge
             updateValidationBadge(validation);
 
-            // Render
             renderPianoRoll();
 
-            const stats = engine.getStats();
-            const summary = `Removed ${stats.removed}, merged ${stats.merged}, repaired ${stats.repaired}, corrected ${stats.corrected}` +
-                (stats.keyCorrected ? `, ${stats.keyCorrected} snapped to key` : '');
+            const summary =
+                `Removed ${restorationStats.removed}, merged ${restorationStats.merged}, repaired ${restorationStats.repaired}, corrected ${restorationStats.corrected}` +
+                (restorationStats.keyCorrected ? `, ${restorationStats.keyCorrected} snapped to key` : '');
             setStatus(`✅ Restoration complete — ${summary}`, 'success');
 
             $('previewBtn').disabled = false;
             $('exportBtn').disabled = false;
-            
+
             state.isProcessing = false;
 
+            // Show audit summary
+            const auditSummary = state.restorationAudit.length > 0 ?
+                `Audit: ${state.restorationAudit.length} changes applied.` :
+                'No changes applied.';
             showModal('Restoration Complete',
-                `✅ MIDI restored successfully!\n\n` +
-                `${summary}\n` +
-                `${cleaned.length} notes remaining\n` +
-                `Confidence: ${state.confidenceScore}%\n` +
-                `Validation: ${validation.passed ? '✅ PASSED' : '⚠️ ' + validation.errors.join(', ')}\n` +
-                `${validation.warnings.length ? 'Warnings: ' + validation.warnings.join(', ') + '\n' : ''}\n` +
-                `Export your cleaned MIDI using the Export button.`
-            );
+                `✅ MIDI restored successfully!\n\n${summary}\n${cleaned.length} notes remaining\nConfidence: ${state.confidenceScore}%\nValidation: ${validation.passed ? '✅ PASSED' : '⚠️ ' + validation.errors.join(', ')}\n${validation.warnings.length ? 'Warnings: ' + validation.warnings.join(', ') + '\n' : ''}\n${auditSummary}`
+                );
         }
 
-        // ---- Validation ----
         function runValidation() {
             if (!state.notes || state.notes.length === 0) {
                 showModal('No Data', 'Please load a MIDI file first');
@@ -2235,44 +1921,19 @@
                 state.cleanedNotes :
                 state.notes;
 
-            const validation = ValidationEngine.validate(state.originalNotes, notesToCheck, state.tempoMap, state.ppq, state.originalMaxTime);
+            const validation = ValidationEngine.validate(state.originalNotes, notesToCheck, state.tempoMap, state.ppq,
+                state.originalMaxTime);
             state.validationPassed = validation.passed;
             state.validationErrors = validation.errors;
 
             updateValidationBadge(validation);
-            
+
             showModal('Validation Results',
                 `${validation.passed ? '✅ All validation checks passed!' : '⚠️ Validation found issues:'}\n\n` +
                 `${validation.errors.length > 0 ? validation.errors.map(e => '• ' + e).join('\n') : 'No errors'}\n` +
                 `${validation.warnings.length > 0 ? '\nWarnings:\n' + validation.warnings.map(w => '• ' + w).join('\n') : ''}\n\n` +
                 `${validation.passed ? 'Ready for export.' : 'Please fix issues before exporting.'}`
             );
-        }
-
-        function updateValidationBadge(validation) {
-            const badge = $('validationBadge');
-            if (validation.passed) {
-                badge.className = 'validation-badge pass';
-                badge.textContent = '✓ Validated';
-            } else {
-                badge.className = 'validation-badge fail';
-                badge.textContent = '⚠️ ' + validation.errors.length + ' issues';
-            }
-        }
-
-        function updateValidationIndicators(stats) {
-            const duration = $('valDuration');
-            const tempo = $('valTempo');
-            const notes = $('valNotes');
-            
-            duration.textContent = `⏱ ${state.duration ? state.duration.toFixed(2) + 's' : '—'}`;
-            duration.className = state.duration > 0 ? 'pass' : 'fail';
-            
-            tempo.textContent = `🎵 ${state.detectedTempo || '—'} BPM`;
-            tempo.className = state.detectedTempo > 30 ? 'pass' : 'fail';
-            
-            notes.textContent = `📝 ${stats.noteCount || 0} notes`;
-            notes.className = stats.noteCount > 0 ? 'pass' : 'fail';
         }
 
         // ---- Export ----
@@ -2282,25 +1943,29 @@
                 return;
             }
 
-            // Run validation before export
-            const validation = ValidationEngine.validate(state.originalNotes, state.cleanedNotes, state.tempoMap, state.ppq, state.originalMaxTime);
+            // Run validation
+            const validation = ValidationEngine.validate(state.originalNotes, state.cleanedNotes, state.tempoMap, state
+                .ppq, state.originalMaxTime);
             if (!validation.passed) {
                 showModal('Validation Failed',
-                    `Cannot export - validation failed:\n\n` +
-                    `${validation.errors.map(e => '• ' + e).join('\n')}\n\n` +
-                    `Please fix these issues before exporting.`
-                );
+                    `Cannot export - validation failed:\n\n${validation.errors.map(e => '• ' + e).join('\n')}\n\nPlease fix these issues before exporting.`
+                    );
                 return;
             }
 
             try {
-                const notes = state.cleanedNotes;
-                const ppq = state.ppq || 480;
-                const tempoMap = state.tempoMap || [{ time: 0, tempo: 500000 }];
-                
-                const midiData = MIDIWriter.write(
-                    notes, ppq, tempoMap, state.timeSignatures || [], state.keySignatures || [], 0, state.originalMaxTime
-                );
+                const midiData = MIDIWriter.write(state.song, state.cleanedNotes);
+                const reparsed = MIDIParser.parse(midiData.buffer.slice(midiData.byteOffset, midiData.byteOffset + midiData.byteLength));
+                const expected = [...state.cleanedNotes].sort((a, b) => a.track - b.track || a.channel - b.channel || a.start - b.start || a.note - b.note);
+                const actual = [...reparsed.notes].sort((a, b) => a.track - b.track || a.channel - b.channel || a.start - b.start || a.note - b.note);
+                if (expected.length !== actual.length) throw new Error(`Export verification failed: expected ${expected.length} notes, reparsed ${actual.length}`);
+                for (let i = 0; i < expected.length; i++) {
+                    const a = expected[i], b = actual[i];
+                    if (a.track !== b.track || a.channel !== b.channel || a.note !== b.note || Math.round(a.start) !== Math.round(b.start) || Math.round(a.end) !== Math.round(b.end) || Math.round(a.velocity) !== Math.round(b.velocity)) {
+                        throw new Error(`Export verification failed at note ${i + 1}`);
+                    }
+                }
+                if (reparsed.tracks.length !== state.song.tracks.length) throw new Error('Export verification failed: track count changed');
                 const blob = new Blob([midiData], { type: 'audio/midi' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
@@ -2317,7 +1982,15 @@
             }
         }
 
-        // ---- Piano Roll ----
+
+        function canvasColor(name, fallback) {
+            const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+            return value || fallback;
+        }
+        // ============================================================
+        // 8. Piano Roll Rendering (with touch support v5.1D)
+        // ============================================================
+
         function renderPianoRoll() {
             const rect = canvas.parentElement.getBoundingClientRect();
             canvas.width = rect.width;
@@ -2331,9 +2004,9 @@
                 state.notes;
 
             if (!notes || notes.length === 0) {
-                ctx.fillStyle = 'var(--bg-tertiary)';
+                ctx.fillStyle = canvasColor('--bg-tertiary', '#1c2333');
                 ctx.fillRect(0, 0, w, h);
-                ctx.fillStyle = 'var(--text-muted)';
+                ctx.fillStyle = canvasColor('--text-muted', '#484f58');
                 ctx.font = '14px sans-serif';
                 ctx.textAlign = 'center';
                 ctx.fillText('No notes to display', w / 2, h / 2);
@@ -2352,13 +2025,11 @@
             const noteHeight = Math.min(plotH / noteRange, 9);
             const timeScale = plotW / maxTime * state.zoomLevel;
 
-            // Background
-            ctx.fillStyle = 'var(--bg-tertiary)';
+            ctx.fillStyle = canvasColor('--bg-tertiary', '#1c2333');
             ctx.fillRect(0, 0, w, h);
 
-            // Waveform overlay
             if (state.showWaveformOverlay && state.audioData) {
-                const step = Math.floor(state.audioData.length / plotW);
+                const step = Math.max(1, Math.floor(state.audioData.length / Math.max(1, plotW)));
                 ctx.strokeStyle = 'rgba(59, 130, 246, 0.1)';
                 ctx.lineWidth = 1;
                 ctx.beginPath();
@@ -2376,10 +2047,8 @@
                 ctx.stroke();
             }
 
-            // Grid
-            ctx.strokeStyle = 'var(--border-color)';
+            ctx.strokeStyle = canvasColor('--border-color', '#30363d');
             ctx.lineWidth = 0.5;
-
             for (let i = 0; i <= noteRange; i++) {
                 const y = padding.top + i * noteHeight;
                 ctx.beginPath();
@@ -2388,7 +2057,7 @@
                 ctx.stroke();
             }
 
-            const beatInterval = 240 * state.zoomLevel;
+            const beatInterval = Math.max(1, Math.round((state.ppq || 480) / 4));
             for (let t = 0; t < maxTime; t += beatInterval) {
                 const x = padding.left + t * timeScale;
                 if (x > w - padding.right) break;
@@ -2398,21 +2067,19 @@
                 ctx.stroke();
             }
 
-            // Chord overlay
             if (state.showChordOverlay && state.chords && state.chords.length > 0) {
                 for (const chord of state.chords) {
                     const x = padding.left + (chord.time || 0) * timeScale * 480 * 0.5;
                     if (x > w) break;
                     ctx.fillStyle = 'rgba(139, 92, 246, 0.12)';
                     ctx.fillRect(x, padding.top, 30, plotH);
-                    ctx.fillStyle = 'var(--accent-purple)';
+                    ctx.fillStyle = canvasColor('--accent-purple', '#bc8cff');
                     ctx.font = '7px sans-serif';
                     ctx.textAlign = 'center';
                     ctx.fillText(chord.root || '', x + 15, padding.top + 12);
                 }
             }
 
-            // Draw notes
             for (const n of notes) {
                 const x = padding.left + n.start * timeScale;
                 const endX = padding.left + (n.end || n.start + 1000) * timeScale;
@@ -2422,18 +2089,14 @@
 
                 let confidence = 50;
                 if (state.confidenceMap) {
-                    confidence = state.confidenceMap.get(n.id || n) || 50;
+                    confidence = state.confidenceMap.get(n.id ?? n) ?? 50;
                 }
 
                 let color;
                 if (state.showConfidence && state.confidenceMap.size > 0) {
-                    if (confidence >= 70) {
-                        color = `rgba(63, 185, 80, ${0.3 + (confidence/100) * 0.5})`;
-                    } else if (confidence >= 40) {
-                        color = `rgba(210, 153, 34, ${0.3 + (confidence/100) * 0.5})`;
-                    } else {
-                        color = `rgba(248, 81, 73, ${0.3 + (confidence/100) * 0.5})`;
-                    }
+                    if (confidence >= 70) color = `rgba(63, 185, 80, ${0.3 + (confidence/100) * 0.5})`;
+                    else if (confidence >= 40) color = `rgba(210, 153, 34, ${0.3 + (confidence/100) * 0.5})`;
+                    else color = `rgba(248, 81, 73, ${0.3 + (confidence/100) * 0.5})`;
                 } else {
                     const vel = n.velocity / 127;
                     color = state.isCleaned ?
@@ -2449,12 +2112,10 @@
                 ctx.strokeRect(x, y, width, height);
             }
 
-            // Labels
-            ctx.fillStyle = 'var(--text-muted)';
+            ctx.fillStyle = canvasColor('--text-muted', '#484f58');
             ctx.font = '7px sans-serif';
             ctx.textAlign = 'right';
             ctx.textBaseline = 'middle';
-
             for (let n = minNote; n <= maxNote; n += 5) {
                 const y = padding.top + (maxNote - n) * noteHeight + noteHeight / 2;
                 ctx.fillText(n, padding.left - 4, y);
@@ -2465,23 +2126,81 @@
             for (let t = 0; t < maxTime; t += beatInterval * 4) {
                 const x = padding.left + t * timeScale;
                 if (x > w - padding.right) break;
-                ctx.fillStyle = 'var(--text-muted)';
-                ctx.fillText(Math.round(t / 240), x, h - padding.bottom + 4);
+                ctx.fillStyle = canvasColor('--text-muted', '#484f58');
+                ctx.fillText(Math.round(t / Math.max(1, (state.ppq || 480) / 4)), x, h - padding.bottom + 4);
             }
 
-            // Status
-            ctx.fillStyle = 'var(--text-muted)';
+            ctx.fillStyle = canvasColor('--text-muted', '#484f58');
             ctx.font = '8px sans-serif';
             ctx.textAlign = 'left';
             ctx.textBaseline = 'bottom';
             const mode = state.isCleaned ? '✅ Restored' : '📝 Original';
             const count = notes.length;
             const confidence = state.confidenceScore || 0;
-            ctx.fillText(`${mode} • ${count} notes • Confidence: ${confidence}% • Zoom: ${Math.round(state.zoomLevel * 100)}%`,
+            ctx.fillText(
+                `${mode} • ${count} notes • Confidence: ${confidence}% • Zoom: ${Math.round(state.zoomLevel * 100)}%`,
                 padding.left, h - 4);
         }
 
-        // ---- UI Helpers ----
+        // ============================================================
+        // 9. Touch & iPad support (v5.1D)
+        // ============================================================
+
+        // Pinch zoom and pan
+        let touchState = {
+            initialPinchDist: 0,
+            initialZoom: 1,
+            panX: 0,
+            panY: 0,
+            isPanning: false,
+            lastTouchX: 0,
+            lastTouchY: 0,
+        };
+
+        canvas.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 2) {
+                // Pinch
+                const dx = e.touches[0].clientX - e.touches[1].clientX;
+                const dy = e.touches[0].clientY - e.touches[1].clientY;
+                touchState.initialPinchDist = Math.hypot(dx, dy);
+                touchState.initialZoom = state.zoomLevel;
+            } else if (e.touches.length === 1) {
+                // Pan or single touch for selection (handled by pointer events)
+                // For pan, we'll use two-finger pan, but we also support one-finger pan with a modifier?
+                // We'll use the pointer events for selection and drag, and use touch events for zoom/pan.
+                touchState.isPanning = false;
+                touchState.lastTouchX = e.touches[0].clientX;
+                touchState.lastTouchY = e.touches[0].clientY;
+            }
+        }, { passive: true });
+
+        canvas.addEventListener('touchmove', (e) => {
+            if (e.touches.length === 2) {
+                e.preventDefault();
+                const dx = e.touches[0].clientX - e.touches[1].clientX;
+                const dy = e.touches[0].clientY - e.touches[1].clientY;
+                const dist = Math.hypot(dx, dy);
+                const scale = dist / touchState.initialPinchDist;
+                state.zoomLevel = Math.max(0.1, Math.min(5, touchState.initialZoom * scale));
+                $('zoomDisplay').textContent = `${Math.round(state.zoomLevel * 100)}%`;
+                renderPianoRoll();
+            } else if (e.touches.length === 1 && e.shiftKey) {
+                // Pan with one finger + shift (or two-finger pan)
+                // We'll use two-finger pan instead: if two fingers are down but not pinching, pan
+                // But we already handle pinch with two fingers. For pan, we need a different gesture.
+                // We'll implement two-finger pan: if two fingers move together without changing distance,
+                // it's a pan. We'll detect by checking if distance change is small.
+                // However, we'll simplify: we don't implement pan yet, as we have scrollbars.
+                // For now, we just update zoom.
+            }
+        }, { passive: false });
+
+        // Also add pointer events for selection and drag (already in patch)
+
+        // ============================================================
+        // 10. UI Helpers (unchanged)
+        // ============================================================
+
         function setStatus(text, className = '') {
             const el = $('statusText');
             el.textContent = text;
@@ -2509,8 +2228,8 @@
         }
 
         function updateFileInfo(file) {
-            $('trackCount').textContent = state.tracks.length || 1;
-            $('noteCount').textContent = state.notes.length;
+            $('trackCount').textContent = state.song.tracks.length || 1;
+            $('eventCount').textContent = state.song.tracks.reduce((sum, t) => sum + (t.events?.length || 0), 0);
             $('tempoDisplay').textContent = state.detectedTempo ? `${Math.round(state.detectedTempo)} BPM` : '—';
             $('formatDisplay').textContent = `Type ${state.format}`;
             updateFileStatus();
@@ -2525,11 +2244,9 @@
             const ring = $('confidenceRing');
             ring.textContent = `${score}%`;
             ring.className = 'ring ' + (score >= 70 ? 'high' : score >= 40 ? 'medium' : 'low');
-
-            $('confidenceScore').textContent = score >= 70 ? '✅ Good' :
-                score >= 40 ? '⚠️ Moderate' : '❌ Low';
-            $('confidenceLabel').textContent = score >= 70 ? 'Ready for export' :
-                score >= 40 ? 'Review recommended' : 'Manual review advised';
+            $('confidenceScore').textContent = score >= 70 ? '✅ Good' : score >= 40 ? '⚠️ Moderate' : '❌ Low';
+            $('confidenceLabel').textContent = score >= 70 ? 'Ready for export' : score >= 40 ? 'Review recommended' :
+                'Manual review advised';
         }
 
         function showModal(title, body) {
@@ -2546,33 +2263,46 @@
         });
 
         function showHelp() {
-            showModal('📖 Help',
-                'MIDI Restoration Studio v4.0\n' +
-                '==========================\n\n' +
-                '1. Load a MIDI file (drag & drop or click)\n' +
-                '2. Optionally load the original WAV for audio assistance\n' +
-                '3. Click "Analyze" to see statistics and issues\n' +
-                '4. Select restoration modules to enable\n' +
-                '5. Click "Restore" to repair the MIDI\n' +
-                '6. Validate and export the restored MIDI\n\n' +
-                'Modules (all optional):\n' +
-                '• Duplicate Removal - removes identical notes\n' +
-                '• Ghost Note Removal - removes low-velocity/short notes\n' +
-                '• Overlap Repair - fixes overlapping same-pitch notes\n' +
-                '• Hanging Note Repair - fixes notes without note-off\n' +
-                '• Note Merge - merges fragmented notes\n' +
-                '• Timing Repair - quantises to beat grid\n' +
-                '• Velocity Smoothing - smooths dynamics\n' +
-                '• Pitch Flicker Repair - fixes C-C#-C patterns\n' +
-                '• Voice Separation - groups by track/channel\n' +
-                '• Phrase Continuity - repairs phrase gaps\n' +
-                '• Chord Consistency - adds missing chord notes\n' +
-                '• Audio-Assisted - uses WAV for confidence scoring'
-            );
+            showModal('📖 MIDI Restoration Studio v5.2 User Guide',
+                'WHAT THE APP DOES\n' +
+                'MIDI Restoration Studio analyses and repairs damaged, untidy, or audio-transcribed MIDI while attempting to preserve the original performance, tracks, channels, controllers, tempo data, and metadata. Processing happens locally in your browser.\n\n' +
+                'BASIC WORKFLOW\n' +
+                '1. Load a .mid or .midi file.\n' +
+                '2. Optionally load the matching audio file for confidence analysis.\n' +
+                '3. Choose an instrument profile and preset.\n' +
+                '4. Press Analyze and review the statistics.\n' +
+                '5. Enable only the repairs you need.\n' +
+                '6. Press Restore, compare Before and After, then Validate.\n' +
+                '7. Export only after validation passes. The app reparses the export before download.\n\n' +
+                'RESTORATION MODULES\n' +
+                'Duplicate Removal: removes exact duplicate notes within the same track and channel.\n' +
+                'Ghost Note Removal: removes extremely short or quiet notes using instrument-specific thresholds. It can remove intentional grace notes, so use conservatively.\n' +
+                'Overlap Repair: shortens overlapping repeats of the same pitch within the same track/channel.\n' +
+                'Hanging Note Repair: creates a valid end for notes that had no matching note-off.\n' +
+                'Note Merge: joins close fragments of the same pitch within the same track/channel.\n' +
+                'Timing Repair: moves starts halfway toward the nearest sixteenth-note grid.\n' +
+                'Velocity Smoothing: reduces abrupt velocity changes using nearby notes.\n' +
+                'Pitch Flicker Repair: joins short same-voice note patterns such as C-C#-C that may be transcription errors.\n' +
+                'Voice Separation: groups notes by track and channel for analysis; it does not rewrite voices.\n' +
+                'Phrase Continuity: identifies phrase groups for analysis; it does not invent notes.\n' +
+                'Chord Consistency: diagnostic only; it does not add chord tones.\n' +
+                'Audio-Assisted: marks low-confidence notes using the optional audio file but does not delete them.\n' +
+                'Snap Notes to Key: deliberately changes pitches outside the chosen scale. Keep it off unless required.\n\n' +
+                'PRESETS\n' +
+                'Conservative: basic cleanup with no timing, velocity, or pitch correction.\n' +
+                'Standard: broader cleanup for audio-to-MIDI conversions.\n' +
+                'Aggressive: currently uses the same module selection as Standard; review carefully.\n' +
+                'Composed: safest choice for MIDI created directly in a DAW or sequencer.\n\n' +
+                'PIANO ROLL\n' +
+                'Click or tap a note to select it. Drag to move it. Drag its right edge to resize it. Drag empty space for marquee selection. Delete removes selected notes; Undo restores the last edit. Pinch changes zoom on iPad.\n\n' +
+                'CONFIDENCE COLOURS\n' +
+                'Green means stronger confidence, amber means review, and red means weak confidence. Confidence is advisory and should not replace listening.\n\n' +
+                'IMPORTANT LIMITATIONS\n' +
+                'Sustain-pedal-aware overlap repair is not yet implemented. Preview uses a simple synthesizer and does not reproduce original instruments or controller automation. Keep the original MIDI file and audition the exported result in your DAW.');
         }
 
         function showAbout() {
-            showModal('🎵 MIDI Restoration Studio v4.0',
+            showModal('🎵 MIDI Restoration Studio v5.2',
                 'Professional desktop-style application\n' +
                 'for restoring WAV-to-MIDI conversions.\n\n' +
                 'Core Principles:\n' +
@@ -2580,6 +2310,12 @@
                 '• Non-destructive editing\n' +
                 '• Deterministic output\n' +
                 '• Standards-compliant MIDI\n\n' +
+                'New in v5.1:\n' +
+                '• Event-based internal model\n' +
+                '• Verified multi-track event-preserving export\n' +
+                '• Smarter restoration with audit trail\n' +
+                '• iPad touch support (pinch zoom)\n' +
+                '• Validation workflow\n\n' +
                 'Built with Web Audio API and Canvas.\n' +
                 'No data is sent to any server.'
             );
@@ -2593,7 +2329,6 @@
             });
             setStatus(`Audition: ${mode} mode`, '');
         }
-
 
         function previewRestored() {
             if (!state.isCleaned || !state.cleanedNotes || state.cleanedNotes.length === 0) {
@@ -2615,9 +2350,8 @@
                 return;
             }
 
-            // Use Web Audio for playback
             if (!state.audioContext) {
-                state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                state.audioContext = new(window.AudioContext || window.webkitAudioContext)();
             }
 
             const ctx = state.audioContext;
@@ -2628,7 +2362,6 @@
             const beatDuration = 60 / tempo;
             const ticksPerSecond = ppq / beatDuration;
 
-            // Stop any ongoing playback
             stopAudition();
 
             for (const n of sorted) {
@@ -2642,26 +2375,18 @@
                 try {
                     const osc = ctx.createOscillator();
                     const gain = ctx.createGain();
-                    
                     osc.type = 'sawtooth';
                     osc.frequency.setValueAtTime(440 * Math.pow(2, (n.note - 69) / 12), startTime);
-                    
                     gain.gain.setValueAtTime(0, startTime);
                     gain.gain.linearRampToValueAtTime(velocity * 0.1, startTime + 0.005);
                     gain.gain.exponentialRampToValueAtTime(0.001, endTime);
-                    
                     osc.connect(gain);
                     gain.connect(ctx.destination);
-                    
                     osc.start(startTime);
                     osc.stop(endTime + 0.01);
-                    
-                    // Store for cleanup
                     if (!window._playbackOscillators) window._playbackOscillators = [];
                     window._playbackOscillators.push({ osc, gain, endTime });
-                } catch (e) {
-                    // Ignore audio errors
-                }
+                } catch (e) {}
             }
 
             setStatus(`▶ Playing ${sorted.length} notes (${state.auditionMode})`, '');
@@ -2670,11 +2395,9 @@
         function stopAudition() {
             if (window._playbackOscillators) {
                 for (const p of window._playbackOscillators) {
-                    try {
-                        p.osc.stop();
+                    try { p.osc.stop();
                         p.osc.disconnect();
-                        p.gain.disconnect();
-                    } catch (e) {}
+                        p.gain.disconnect(); } catch (e) {}
                 }
                 window._playbackOscillators = [];
             }
@@ -2694,27 +2417,84 @@
                 state.audioContext.close().catch(() => {});
             }
             const fresh = {
-                midiFileName:null,audioFileName:null,midiData:null,notes:[],originalNotes:[],cleanedNotes:[],tracks:[],
-                tempoMap:[{time:0,tempo:500000}],timeSignatures:[],keySignatures:[],ppq:480,format:1,duration:0,originalMaxTime:0,
-                audioData:null,audioBuffer:null,audioContext:null,sampleRate:44100,confidenceMap:new Map(),confidenceExplanations:new Map(),
-                chromagram:[],spectrogram:[],frameTimes:[],beats:[],onsets:[],detectedTempo:120,detectedKey:null,midiDetectedKey:null,audioDetectedKey:null,
-                chords:[],voices:[],phrases:[],stats:null,isCleaned:false,confidenceScore:0,zoomLevel:1,showConfidence:true,
-                showWaveformOverlay:false,showChordOverlay:false,auditionMode:'before',instrument:'piano',activePreset:'conservative',
-                noteIdCounter:0,validationPassed:false,validationErrors:[],isProcessing:false
+                midiFileName: null,
+                audioFileName: null,
+                midiData: null,
+                song: { format: 1, ppq: 480, tracks: [], tempoMap: [{ time: 0, tempo: 500000 }], timeSignatures: [],
+                    keySignatures: [] },
+                notes: [],
+                originalNotes: [],
+                cleanedNotes: [],
+                audioData: null,
+                audioBuffer: null,
+                audioContext: null,
+                sampleRate: 44100,
+                confidenceMap: new Map(),
+                confidenceExplanations: new Map(),
+                chromagram: [],
+                spectrogram: [],
+                frameTimes: [],
+                beats: [],
+                onsets: [],
+                detectedTempo: 120,
+                detectedKey: null,
+                midiDetectedKey: null,
+                audioDetectedKey: null,
+                chords: [],
+                voices: [],
+                phrases: [],
+                stats: null,
+                isCleaned: false,
+                confidenceScore: 0,
+                zoomLevel: 1,
+                showConfidence: true,
+                showWaveformOverlay: false,
+                showChordOverlay: false,
+                auditionMode: 'before',
+                instrument: 'piano',
+                activePreset: 'conservative',
+                noteIdCounter: 0,
+                validationPassed: false,
+                validationErrors: [],
+                isProcessing: false,
+                restorationAudit: [],
+                ppq: 480,
+                format: 1,
+                tempoMap: [{ time: 0, tempo: 500000 }],
+                timeSignatures: [],
+                keySignatures: [],
+                duration: 0,
+                originalMaxTime: 0,
             };
             Object.assign(state, fresh);
-            $('midiInput').value=''; $('audioInput').value='';
-            for (const id of ['midiFileName','audioFileName']) { $(id).textContent=''; $(id).style.display='none'; }
-            for (const id of ['trackCount','noteCount','tempoDisplay','formatDisplay','midiKeyDisplay','audioKeyDisplay']) $(id).textContent='—';
-            $('fileStatus').className='file-status missing'; $('fileStatus').textContent='No files loaded';
-            $('audioStatus').innerHTML='<div>⏳ Waiting for audio...</div>';
-            $('statsPlaceholder').style.display='block'; $('statsContent').style.display='none'; $('statGrid').innerHTML='';
-            $('analyzeBtn').disabled=true; $('restoreBtn').disabled=true; $('previewBtn').disabled=true; $('exportBtn').disabled=true;
-            $('keyRootSelect').value=''; $('keyScaleSelect').value='major'; $('keyModuleCheckbox').checked=false;
-            $('useDetectedKeyBtn').style.display='none';
-            $('confidenceRing').textContent='0%'; $('confidenceRing').className='ring low'; $('confidenceScore').textContent='—'; $('confidenceLabel').textContent='No data';
-            $('validationBadge').className='validation-badge';
-            renderPianoRoll(); drawWaveform(new Float32Array(0));
+            $('midiInput').value = '';
+            $('audioInput').value = '';
+            for (const id of ['midiFileName', 'audioFileName']) { $(id).textContent = '';
+                $(id).style.display = 'none'; }
+            for (const id of ['trackCount', 'eventCount', 'tempoDisplay', 'formatDisplay', 'midiKeyDisplay',
+                    'audioKeyDisplay'
+                ]) $(id).textContent = '—';
+            $('fileStatus').className = 'file-status missing';
+            $('fileStatus').textContent = 'No files loaded';
+            $('audioStatus').innerHTML = '<div>⏳ Waiting for audio...</div>';
+            $('statsPlaceholder').style.display = 'block';
+            $('statsContent').style.display = 'none';
+            $('statGrid').innerHTML = '';
+            $('analyzeBtn').disabled = true;
+            $('restoreBtn').disabled = true;
+            $('previewBtn').disabled = true;
+            $('exportBtn').disabled = true;
+            $('keyRootSelect').value = '';
+            $('keyScaleSelect').value = 'major';
+            $('keyModuleCheckbox').checked = false;
+            $('useDetectedKeyBtn').style.display = 'none';
+            $('confidenceRing').textContent = '0%';
+            $('confidenceRing').className = 'ring low';
+            $('confidenceScore').textContent = '—';
+            $('confidenceLabel').textContent = 'No data';
+            $('validationBadge').className = 'validation-badge';
+            renderPianoRoll();
+            drawWaveform(new Float32Array(0));
             setStatus('Ready — Load MIDI and WAV files', '');
         }
 
@@ -2739,7 +2519,6 @@
             renderPianoRoll();
         }
 
-        // ---- Waveform ----
         function drawWaveform(audioData) {
             const wc = $('waveformCanvas');
             const rect = wc.parentElement.getBoundingClientRect();
@@ -2750,13 +2529,13 @@
             const w = wc.width;
             const h = wc.height;
 
-            ctx2.fillStyle = 'var(--bg-tertiary)';
+            ctx2.fillStyle = canvasColor('--bg-tertiary', '#1c2333');
             ctx2.fillRect(0, 0, w, h);
 
             if (!audioData) return;
 
-            const step = Math.floor(audioData.length / w);
-            ctx2.strokeStyle = 'var(--accent-blue)';
+            const step = Math.max(1, Math.floor(audioData.length / Math.max(1, w)));
+            ctx2.strokeStyle = canvasColor('--accent-blue', '#58a6ff');
             ctx2.lineWidth = 0.5;
 
             ctx2.beginPath();
@@ -2787,10 +2566,9 @@
             }
             ctx2.stroke();
 
-            // Beat markers
             if (state.beats && state.beats.length > 0) {
                 const sampleRate = state.sampleRate || 44100;
-                ctx2.strokeStyle = 'var(--accent-orange)';
+                ctx2.strokeStyle = canvasColor('--accent-orange', '#d29922');
                 ctx2.lineWidth = 0.5;
                 for (const beat of state.beats) {
                     const x = beat * sampleRate / audioData.length * w;
@@ -2816,24 +2594,21 @@
                     conservative: { duplicate: true, ghost: true, overlap: true, hanging: true, merge: true,
                         timing: false, velocity: false, pitch: false, voice: false, phrase: false, chord: false,
                         audio: true, key: false },
-                    standard: { duplicate: true, ghost: true, overlap: true, hanging: true, merge: true, timing: true,
-                        velocity: true, pitch: true, voice: true, phrase: true, chord: true, audio: true, key: false },
-                    aggressive: { duplicate: true, ghost: true, overlap: true, hanging: true, merge: true, timing: true,
-                        velocity: true, pitch: true, voice: true, phrase: true, chord: true, audio: true, key: false },
+                    standard: { duplicate: true, ghost: true, overlap: true, hanging: true, merge: true,
+                        timing: true, velocity: true, pitch: true, voice: true, phrase: true, chord: true,
+                        audio: true, key: false },
+                    aggressive: { duplicate: true, ghost: true, overlap: true, hanging: true, merge: true,
+                        timing: true, velocity: true, pitch: true, voice: true, phrase: true, chord: true,
+                        audio: true, key: false },
                     piano: { duplicate: true, ghost: true, overlap: true, hanging: true, merge: true, timing: true,
-                        velocity: true, pitch: true, voice: true, phrase: true, chord: true, audio: true, key: false },
+                        velocity: true, pitch: true, voice: true, phrase: true, chord: true, audio: true,
+                        key: false },
                     guitar: { duplicate: true, ghost: true, overlap: true, hanging: true, merge: true, timing: true,
-                        velocity: true, pitch: true, voice: true, phrase: true, chord: false, audio: true, key: false },
+                        velocity: true, pitch: true, voice: true, phrase: true, chord: false, audio: true,
+                        key: false },
                     bass: { duplicate: true, ghost: true, overlap: true, hanging: true, merge: true, timing: true,
-                        velocity: true, pitch: true, voice: true, phrase: false, chord: false, audio: true, key: false },
-                    // For MIDI that was sequenced/composed directly (not transcribed from audio).
-                    // Only fixes technical errors that are never intentional — exact duplicate
-                    // events, overlapping same-pitch notes, and notes with no note-off. Leaves
-                    // everything an arranger could have meant on purpose untouched: no timing
-                    // quantization, no velocity smoothing, no pitch/phrase/chord "correction",
-                    // no ghost-note removal (short/quiet notes may be deliberate), no merging of
-                    // repeated notes, and no audio-confidence filtering (there's no transcription
-                    // to check against — the MIDI itself is the source of truth).
+                        velocity: true, pitch: true, voice: true, phrase: false, chord: false, audio: true,
+                        key: false },
                     composed: { duplicate: true, ghost: false, overlap: true, hanging: true, merge: false,
                         timing: false, velocity: false, pitch: false, voice: false, phrase: false, chord: false,
                         audio: false, key: false },
@@ -2910,299 +2685,648 @@
         function init() {
             initFileHandling();
             renderPianoRoll();
-            setStatus('🎵 MIDI Restoration Studio v4.5 — Load MIDI and WAV files', '');
-            console.log('🎵 MIDI Restoration Studio v4.5');
-            console.log('Core Principles: Restoration, not composition');
-            console.log('✅ Standards-compliant MIDI parser/writer');
-            console.log('✅ 12 restoration modules');
-            console.log('✅ Built-in validation');
-            console.log('📖 Press H for help, V for validation');
+            setStatus('🎵 MIDI Restoration Studio v5.2 — Load MIDI and WAV files', '');
+            console.log('🎵 MIDI Restoration Studio v5.2');
+            console.log('✓ Event-based core');
+            console.log('✓ Verified multi-track export');
+            console.log('✓ Smarter restoration with audit');
+            console.log('✓ iPad touch (pinch zoom)');
+            console.log('✓ Validation workflow');
         }
 
         document.addEventListener('DOMContentLoaded', init);
+
+        function onNotesEdited() {
+            const edited = state.isCleaned && state.cleanedNotes.length ? state.cleanedNotes : state.notes;
+            state.validationPassed = false;
+            state.validationErrors = [];
+            $('validationBadge').className = 'validation-badge';
+            $('exportBtn').disabled = !state.isCleaned || !state.cleanedNotes.length;
+            const stats = AnalysisEngine.analyze(edited, state.ppq, state.tempoMap);
+            state.stats = stats;
+            displayStats(stats);
+            $('statsPlaceholder').style.display = 'none';
+            $('statsContent').style.display = 'block';
+            updateValidationIndicators(stats);
+            if (state.audioData) buildConfidenceMap();
+        }
+
+        // ============================================================
+        // 11. Interactive Piano Roll Editing (merged v4.5 patch)
+        // ============================================================
+
+        (function() {
+            "use strict";
+            if (typeof state === 'undefined' || typeof canvas === 'undefined') return;
+
+            const editState = {
+                selected: new Set(),
+                undoStack: [],
+                marquee: null,
+                drag: null,
+                layout: null,
+                manualEdits: 0,
+            };
+            window.__editState = editState;
+
+            function activeNotes() {
+                return (state.isCleaned && state.cleanedNotes.length) ? state.cleanedNotes : state.notes;
+            }
+
+            function computeLayout() {
+                const notes = activeNotes();
+                if (!notes || !notes.length) return null;
+                const w = canvas.width,
+                    h = canvas.height;
+                const minNote = Math.max(21, Math.min(...notes.map(n => n.note)) - 2);
+                const maxNote = Math.min(108, Math.max(...notes.map(n => n.note)) + 2);
+                const noteRange = maxNote - minNote + 1;
+                const maxTime = Math.max(...notes.map(n => n.end || n.start + 1000)) + 1000;
+                const padding = { top: 16, bottom: 28, left: 32, right: 12 };
+                const plotW = w - padding.left - padding.right;
+                const plotH = h - padding.top - padding.bottom;
+                const noteHeight = Math.min(plotH / noteRange, 9);
+                const timeScale = plotW / maxTime * state.zoomLevel;
+                return { w, h, minNote, maxNote, noteRange, maxTime, padding, plotW, plotH, noteHeight, timeScale };
+            }
+
+            const _origRender = window.renderPianoRoll;
+            if (typeof _origRender === 'function') {
+                window.renderPianoRoll = function() {
+                    _origRender.apply(this, arguments);
+                    const L = computeLayout();
+                    editState.layout = L;
+                    if (!L) return;
+                    const notes = activeNotes();
+                    ctx.save();
+                    ctx.strokeStyle = '#ffffff';
+                    ctx.lineWidth = 1.5;
+                    for (const n of notes) {
+                        if (!editState.selected.has(n)) continue;
+                        const x = L.padding.left + n.start * L.timeScale;
+                        const endX = L.padding.left + (n.end || n.start + 1000) * L.timeScale;
+                        const y = L.padding.top + (L.maxNote - n.note) * L.noteHeight;
+                        ctx.strokeRect(x + 0.5, y + 0.5, Math.max(1, endX - x) - 1, Math.max(1, L.noteHeight - 1) - 1);
+                    }
+                    if (editState.marquee) {
+                        const [a, b, c, d] = editState.marquee;
+                        const rx = Math.min(a, c),
+                            ry = Math.min(b, d),
+                            rw = Math.abs(c - a),
+                            rh = Math.abs(d - b);
+                        ctx.fillStyle = 'rgba(88,166,255,0.15)';
+                        ctx.fillRect(rx, ry, rw, rh);
+                        ctx.strokeStyle = '#58a6ff';
+                        ctx.lineWidth = 1;
+                        ctx.strokeRect(rx + 0.5, ry + 0.5, rw - 1, rh - 1);
+                    }
+                    if (editState.manualEdits || editState.selected.size) {
+                        ctx.fillStyle = 'rgba(88,166,255,0.9)';
+                        ctx.font = '9px sans-serif';
+                        ctx.textAlign = 'right';
+                        ctx.textBaseline = 'top';
+                        const msg = (editState.selected.size ? `${editState.selected.size} selected` : '') +
+                            (editState.selected.size && editState.manualEdits ? ' · ' : '') +
+                            (editState.manualEdits ? `${editState.manualEdits} edit${editState.manualEdits>1?'s':''}` :
+                                '');
+                        ctx.fillText(msg, L.w - 8, 4);
+                    }
+                    ctx.restore();
+                };
+            }
+
+            function canvasXY(e) {
+                const r = canvas.getBoundingClientRect();
+                return [
+                    (e.clientX - r.left) * (canvas.width / r.width),
+                    (e.clientY - r.top) * (canvas.height / r.height)
+                ];
+            }
+
+            function hitTest(px, py) {
+                const L = editState.layout;
+                if (!L) return null;
+                const notes = activeNotes();
+                for (let i = notes.length - 1; i >= 0; i--) {
+                    const n = notes[i];
+                    const x = L.padding.left + n.start * L.timeScale;
+                    const endX = L.padding.left + (n.end || n.start + 1000) * L.timeScale;
+                    const y = L.padding.top + (L.maxNote - n.note) * L.noteHeight;
+                    const w = Math.max(1, endX - x),
+                        h = Math.max(2, L.noteHeight);
+                    if (px >= x && px <= x + w && py >= y && py <= y + h) {
+                        return { note: n, edge: (px >= x + w - Math.min(6, w * 0.4)) };
+                    }
+                }
+                return null;
+            }
+
+            function snapshot() {
+                editState.undoStack.push({
+                    notes: state.notes.map(n => ({ ...n })),
+                    cleaned: state.cleanedNotes.map(n => ({ ...n })),
+                    isCleaned: state.isCleaned,
+                });
+                if (editState.undoStack.length > 100) editState.undoStack.shift();
+            }
+
+            function doUndo() {
+                if (!editState.undoStack.length) return;
+                const s = editState.undoStack.pop();
+                state.notes = s.notes;
+                state.cleanedNotes = s.cleaned;
+                state.isCleaned = s.isCleaned;
+                editState.selected.clear();
+                editState.manualEdits = Math.max(0, editState.manualEdits - 1);
+                if (typeof renderPianoRoll === 'function') renderPianoRoll();
+                onNotesEdited()
+            }
+
+            function deleteSelected() {
+                if (!editState.selected.size) return;
+                snapshot();
+                const kill = editState.selected;
+                if (state.isCleaned && state.cleanedNotes.length) {
+                    state.cleanedNotes = state.cleanedNotes.filter(n => !kill.has(n));
+                } else {
+                    state.notes = state.notes.filter(n => !kill.has(n));
+                }
+                editState.selected.clear();
+                editState.manualEdits++;
+                if (typeof renderPianoRoll === 'function') renderPianoRoll();
+                onNotesEdited()
+            }
+            window.pianoRollDeleteSelected = deleteSelected;
+            window.pianoRollUndo = doUndo;
+
+            canvas.addEventListener('pointerdown', (e) => {
+                if (!activeNotes().length) return;
+                const L = editState.layout || computeLayout();
+                editState.layout = L;
+                if (!L) return;
+                const [px, py] = canvasXY(e);
+                const hit = hitTest(px, py);
+                const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+                canvas.setPointerCapture(e.pointerId);
+
+                if (!hit) {
+                    const base = additive ? new Set(editState.selected) : new Set();
+                    editState.selected = base;
+                    editState.marquee = [px, py, px, py];
+                    const move = (ev) => {
+                        if (ev.pointerId !== e.pointerId) return;
+                        const [mx, my] = canvasXY(ev);
+                        editState.marquee = [px, py, mx, my];
+                        const rx = Math.min(px, mx),
+                            ry = Math.min(py, my),
+                            rw = Math.abs(mx - px),
+                            rh = Math.abs(my - py);
+                        const sel = new Set(base);
+                        for (const n of activeNotes()) {
+                            const nx = L.padding.left + n.start * L.timeScale;
+                            const nex = L.padding.left + (n.end || n.start + 1000) * L.timeScale;
+                            const ny = L.padding.top + (L.maxNote - n.note) * L.noteHeight;
+                            if (nx < rx + rw && nex > rx && ny < ry + rh && ny + L.noteHeight > ry) sel.add(n);
+                        }
+                        editState.selected = sel;
+                        if (typeof renderPianoRoll === 'function') renderPianoRoll();
+                    };
+                    const up = (ev) => {
+                        if (ev.pointerId !== e.pointerId) return;
+                        editState.marquee = null;
+                        canvas.removeEventListener('pointermove', move);
+                        canvas.removeEventListener('pointerup', up);
+                        canvas.removeEventListener('pointercancel', up);
+                        if (typeof renderPianoRoll === 'function') renderPianoRoll();
+                    };
+                    canvas.addEventListener('pointermove', move);
+                    canvas.addEventListener('pointerup', up);
+                    canvas.addEventListener('pointercancel', up);
+                    if (typeof renderPianoRoll === 'function') renderPianoRoll();
+                    return;
+                }
+
+                const already = editState.selected.has(hit.note);
+                if (additive) {
+                    if (already) editState.selected.delete(hit.note);
+                    else editState.selected.add(hit.note);
+                } else if (!already) {
+                    editState.selected = new Set([hit.note]);
+                }
+                if (typeof renderPianoRoll === 'function') renderPianoRoll();
+                if (!editState.selected.has(hit.note)) return;
+
+                const originals = [...editState.selected].map(n => ({ n, s: n.start, ee: (n.end || n.start + 1000),
+                    p: n.note }));
+                let took = false;
+                const drag = { mode: hit.edge ? 'resize' : 'move', startX: px, startY: py, originals };
+                const move = (ev) => {
+                    if (ev.pointerId !== e.pointerId) return;
+                    const [mx, my] = canvasXY(ev);
+                    const dx = (mx - drag.startX) / L.timeScale;
+                    const dy = Math.round((my - drag.startY) / L.noteHeight);
+                    if (!took && (Math.abs(mx - drag.startX) > 2 || Math.abs(my - drag.startY) > 2)) {
+                        snapshot();
+                        took = true;
+                    }
+                    const minStart = Math.min(...originals.map(o => o.s));
+                    const shiftDx = Math.max(dx, -minStart);
+                    for (const o of originals) {
+                        if (drag.mode === 'resize') {
+                            const ne = Math.max(o.s + 1, Math.round(o.ee + dx));
+                            o.n.end = ne;
+                            o.n.duration = ne - o.n.start;
+                        } else {
+                            const ns = Math.max(0, Math.round(o.s + shiftDx));
+                            const dur = o.ee - o.s;
+                            o.n.start = ns;
+                            o.n.end = ns + dur;
+                            o.n.duration = dur;
+                            o.n.note = Math.max(0, Math.min(127, o.p - dy));
+                        }
+                    }
+                    if (typeof renderPianoRoll === 'function') renderPianoRoll();
+                };
+                const up = (ev) => {
+                    if (ev.pointerId !== e.pointerId) return;
+                    if (took) { editState.manualEdits++; }
+                    canvas.removeEventListener('pointermove', move);
+                    canvas.removeEventListener('pointerup', up);
+                    canvas.removeEventListener('pointercancel', up);
+                    if (typeof renderPianoRoll === 'function') renderPianoRoll();
+                    onNotesEdited()
+                };
+                canvas.addEventListener('pointermove', move);
+                canvas.addEventListener('pointerup', up);
+                canvas.addEventListener('pointercancel', up);
+            });
+
+            canvas.addEventListener('pointermove', (e) => {
+                if (editState.drag || editState.marquee) return;
+                if (e.pointerType !== 'mouse') return;
+                const [px, py] = canvasXY(e);
+                const hit = hitTest(px, py);
+                canvas.style.cursor = hit ? (hit.edge ? 'ew-resize' : 'grab') : 'crosshair';
+            });
+
+            document.addEventListener('keydown', (e) => {
+                const tag = (document.activeElement && document.activeElement.tagName) || '';
+                if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+                if ((e.key === 'z' || e.key === 'Z') && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    doUndo();
+                    return;
+                }
+                if ((e.key === 'Delete' || e.key === 'Backspace') && editState.selected.size) {
+                    e.preventDefault();
+                    deleteSelected();
+                    return;
+                }
+                if ((e.key === 'a' || e.key === 'A') && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    editState.selected = new Set(activeNotes());
+                    if (typeof renderPianoRoll === 'function') renderPianoRoll();
+                    return;
+                }
+                if (e.key === 'Escape' && editState.selected.size) {
+                    editState.selected.clear();
+                    if (typeof renderPianoRoll === 'function') renderPianoRoll();
+                }
+            });
+
+            console.log('[v5.1] Interactive piano-roll editing enabled');
+        })();
+
+        // ============================================================
+        // 12. Audio Analysis helpers (FFT, key detection)
+        // ============================================================
+
+        function fft(re, im) {
+            const n = re.length;
+            for (let i = 1, j = 0; i < n; i++) {
+                let bit = n >> 1;
+                for (; j & bit; bit >>= 1) j ^= bit;
+                j ^= bit;
+                if (i < j) { [re[i], re[j]] = [re[j], re[i]];
+                    [im[i], im[j]] = [im[j], im[i]]; }
+            }
+            for (let len = 2; len <= n; len <<= 1) {
+                const ang = -2 * Math.PI / len;
+                const wr = Math.cos(ang),
+                    wi = Math.sin(ang);
+                for (let i = 0; i < n; i += len) {
+                    let curWr = 1,
+                        curWi = 0;
+                    for (let j = 0; j < len / 2; j++) {
+                        const ur = re[i + j],
+                            ui = im[i + j];
+                        const vr = re[i + j + len / 2] * curWr - im[i + j + len / 2] * curWi;
+                        const vi = re[i + j + len / 2] * curWi + im[i + j + len / 2] * curWr;
+                        re[i + j] = ur + vr;
+                        im[i + j] = ui + vi;
+                        re[i + j + len / 2] = ur - vr;
+                        im[i + j + len / 2] = ui - vi;
+                        const nWr = curWr * wr - curWi * wi;
+                        const nWi = curWr * wi + curWi * wr;
+                        curWr = nWr;
+                        curWi = nWi;
+                    }
+                }
+            }
+        }
+
+        function ticksToSeconds(ticks, ppq, tempoMap) {
+            if (!tempoMap || !tempoMap.length) return (ticks / (ppq || 480)) * 0.5;
+            let seconds = 0,
+                lastTick = 0,
+                tempo = tempoMap[0].tempo || 500000;
+            for (const t of tempoMap) {
+                if (t.time >= ticks) break;
+                seconds += ((t.time - lastTick) / (ppq || 480)) * (tempo / 1000000);
+                lastTick = t.time;
+                tempo = t.tempo || tempo;
+            }
+            seconds += ((ticks - lastTick) / (ppq || 480)) * (tempo / 1000000);
+            return seconds;
+        }
+
+        function detectKeyFromPitchClass(values) {
+            if (!values || values.length < 12) return null;
+            const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+            const majorProfile = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
+            const minorProfile = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+            const corr = (a, b) => {
+                const am = a.reduce((x, y) => x + y, 0) / a.length;
+                const bm = b.reduce((x, y) => x + y, 0) / b.length;
+                let num = 0,
+                    da = 0,
+                    db = 0;
+                for (let i = 0; i < a.length; i++) { const x = a[i] - am,
+                        y = b[i] - bm;
+                    num += x * y;
+                    da += x * x;
+                    db += y * y; }
+                return num / (Math.sqrt(da * db) || 1);
+            };
+            let best = null;
+            for (let root = 0; root < 12; root++) {
+                for (const [mode, profile] of [
+                        ['major', majorProfile],
+                        ['minor', minorProfile]
+                    ]) {
+                    const rotated = values.map((_, i) => profile[(i - root + 12) % 12]);
+                    const score = corr(values, rotated);
+                    if (!best || score > best.score) best = { root, rootName: noteNames[root], mode, score };
+                }
+            }
+            return best;
+        }
+
+        function detectMIDIKey(notes) {
+            if (!notes || !notes.length) return null;
+            const pc = new Array(12).fill(0);
+            for (const n of notes) {
+                const duration = Math.max(1, (n.end ?? n.start + 1) - n.start);
+                pc[((n.note % 12) + 12) % 12] += duration * Math.max(1, n.velocity || 64);
+            }
+            return detectKeyFromPitchClass(pc);
+        }
+
+        async function analyzeAudio(audioData, sampleRate) {
+            const fftSize = 2048;
+            const chroma = new Array(12).fill(0);
+
+            const window = new Float64Array(fftSize);
+            for (let i = 0; i < fftSize; i++) {
+                window[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (fftSize - 1)));
+            }
+
+            const targetFrames = 1200;
+            const maxStart = Math.max(0, audioData.length - fftSize);
+            const hopSize = Math.max(256, Math.floor(maxStart / targetFrames) || 256);
+            const numFrames = Math.floor(maxStart / hopSize) + 1;
+
+            const spectrogram = [];
+            const frameTimes = [];
+
+            const re = new Float64Array(fftSize);
+            const im = new Float64Array(fftSize);
+
+            for (let frame = 0; frame < numFrames; frame++) {
+                const start = frame * hopSize;
+                im.fill(0);
+                for (let i = 0; i < fftSize; i++) {
+                    re[i] = (audioData[start + i] || 0) * window[i];
+                }
+                fft(re, im);
+
+                const frameChroma = new Array(12).fill(0);
+                for (let bin = 1; bin < fftSize / 2; bin++) {
+                    const freq = bin * sampleRate / fftSize;
+                    if (freq < 50 || freq > 2000) continue;
+                    const midiNote = 69 + 12 * Math.log2(freq / 440);
+                    const chromaBin = Math.round(midiNote) % 12;
+                    const mag = Math.hypot(re[bin], im[bin]);
+                    frameChroma[chromaBin] += mag;
+                }
+                const frameMax = Math.max(...frameChroma);
+                if (frameMax > 0) {
+                    for (let i = 0; i < 12; i++) frameChroma[i] /= frameMax;
+                }
+                for (let i = 0; i < 12; i++) chroma[i] += frameChroma[i];
+                spectrogram.push(frameChroma);
+                frameTimes.push((start + fftSize / 2) / sampleRate);
+            }
+
+            const max = Math.max(...chroma);
+            if (max > 0) {
+                for (let i = 0; i < 12; i++) chroma[i] /= max;
+            }
+
+            state.chromagram = chroma;
+            state.spectrogram = spectrogram;
+            state.frameTimes = frameTimes;
+
+            const audioKey = detectKeyFromPitchClass(chroma);
+            state.audioDetectedKey = audioKey;
+            state.detectedKey = audioKey;
+            $('audioKeyDisplay').textContent = audioKey ? `${audioKey.rootName} ${audioKey.mode}` : '—';
+            const detectBtn = $('useDetectedKeyBtn');
+            if (audioKey) {
+                detectBtn.textContent = `Use WAV key: ${audioKey.rootName} ${audioKey.mode}`;
+                detectBtn.style.display = 'block';
+            }
+
+            detectBeats(audioData, sampleRate);
+        }
+
+        function detectBeats(audioData, sampleRate) {
+            const onsets = [];
+            const windowSize = 1024;
+            const hopSize = 256;
+
+            for (let i = windowSize; i < audioData.length - windowSize; i += hopSize) {
+                let energy = 0,
+                    prevEnergy = 0;
+                for (let j = 0; j < windowSize; j++) {
+                    energy += audioData[i + j] * audioData[i + j];
+                    prevEnergy += audioData[i - windowSize + j] * audioData[i - windowSize + j];
+                }
+                const ratio = energy / (prevEnergy + 0.0001);
+                if (ratio > 2.0 && energy > 0.01) {
+                    onsets.push(i / sampleRate);
+                }
+            }
+
+            state.onsets = onsets;
+
+            if (onsets.length > 4) {
+                const intervals = [];
+                for (let i = 1; i < Math.min(onsets.length, 30); i++) {
+                    intervals.push(onsets[i] - onsets[i - 1]);
+                }
+                intervals.sort((a, b) => a - b);
+                const median = intervals[Math.floor(intervals.length / 2)];
+                if (median > 0.2 && median < 2) {
+                    state.beats = onsets.filter((_, i) => i % Math.round(median / 0.5) === 0);
+                }
+            }
+        }
+
+        function buildConfidenceMap() {
+            if (!state.notes.length || !state.audioData) return;
+
+            state.confidenceMap.clear();
+            state.confidenceExplanations.clear();
+
+            const detectedKey = state.detectedKey;
+            const keyRoot = detectedKey && Number.isInteger(detectedKey.root) ? detectedKey.root : -1;
+            const keyScale = detectedKey && detectedKey.mode === 'minor' ?
+                [0, 2, 3, 5, 7, 8, 10] :
+                [0, 2, 4, 5, 7, 9, 11];
+            const spectrogram = state.spectrogram || [];
+            const frameTimes = state.frameTimes || [];
+            const ppq = state.ppq || 480;
+            const tempoMap = state.tempoMap;
+
+            for (const note of state.notes) {
+                let confidence = 50;
+                const reasons = [];
+
+                const noteBin = note.note % 12;
+                let support = 0;
+                if (spectrogram.length && frameTimes.length) {
+                    const tStart = ticksToSeconds(note.start, ppq, tempoMap);
+                    const tEnd = ticksToSeconds(note.end ?? (note.start + 1), ppq, tempoMap);
+                    let sum = 0,
+                        count = 0;
+                    for (let i = 0; i < frameTimes.length; i++) {
+                        if (frameTimes[i] >= tStart && frameTimes[i] <= tEnd) {
+                            sum += spectrogram[i][noteBin] || 0;
+                            count++;
+                        }
+                    }
+                    if (!count) {
+                        let nearest = 0,
+                            best = Infinity;
+                        for (let i = 0; i < frameTimes.length; i++) {
+                            const d = Math.abs(frameTimes[i] - tStart);
+                            if (d < best) { best = d;
+                                nearest = i; }
+                        }
+                        sum = spectrogram[nearest][noteBin] || 0;
+                        count = 1;
+                    }
+                    support = sum / count;
+                }
+                confidence += support * 25;
+                if (support > 0.3) reasons.push('audio support');
+
+                if (keyRoot >= 0) {
+                    if (keyScale.includes((noteBin - keyRoot + 12) % 12)) {
+                        confidence += 15;
+                        reasons.push('in key');
+                    }
+                }
+
+                const duration = note.duration || 240;
+                if (duration > 60) confidence += 10;
+                else if (duration < 30) { confidence -= 15;
+                    reasons.push('very short'); } else { confidence -= 5;
+                    reasons.push('short'); }
+
+                if (note.velocity > 10 && note.velocity < 120) confidence += 10;
+                else if (note.velocity < 5) { confidence -= 10;
+                    reasons.push('low velocity'); }
+
+                if (note.note >= 21 && note.note <= 108) confidence += 5;
+                else { confidence -= 10;
+                    reasons.push('out of range'); }
+
+                if (note.hanging) { confidence -= 15;
+                    reasons.push('hanging note'); }
+
+                confidence = Math.max(0, Math.min(100, Math.round(confidence)));
+                state.confidenceMap.set(note.id ?? note, confidence);
+                state.confidenceExplanations.set(note.id ?? note, reasons);
+            }
+
+            const avg = Array.from(state.confidenceMap.values()).reduce((a, b) => a + b, 0) / state.confidenceMap.size;
+            state.confidenceScore = Math.round(avg || 0);
+            updateConfidenceRing(state.confidenceScore);
+        }
+
+        function useDetectedKey() {
+            const detected = state.audioDetectedKey || state.midiDetectedKey || state.detectedKey;
+            if (!detected) return;
+            $('keyRootSelect').value = String(detected.root);
+            $('keyScaleSelect').value = detected.mode === 'minor' ? 'naturalMinor' : 'major';
+            $('keyModuleCheckbox').checked = true;
+            setStatus(`Key snap enabled: ${detected.rootName} ${detected.mode}`, '');
+        }
+
+        function updateValidationBadge(validation) {
+            const badge = $('validationBadge');
+            if (validation.passed) {
+                badge.className = 'validation-badge pass';
+                badge.textContent = '✓ Validated';
+            } else {
+                badge.className = 'validation-badge fail';
+                badge.textContent = '⚠️ ' + validation.errors.length + ' issues';
+            }
+        }
+
+        function updateValidationIndicators(stats) {
+            const duration = $('valDuration');
+            const tempo = $('valTempo');
+            const notes = $('valNotes');
+            duration.textContent = `⏱ ${state.duration ? state.duration.toFixed(2) + 's' : '—'}`;
+            duration.className = state.duration > 0 ? 'pass' : 'fail';
+            tempo.textContent = `🎵 ${state.detectedTempo || '—'} BPM`;
+            tempo.className = state.detectedTempo > 30 ? 'pass' : 'fail';
+            notes.textContent = `📝 ${stats.noteCount || 0} notes`;
+            notes.className = stats.noteCount > 0 ? 'pass' : 'fail';
+        }
+
+        // Export for external
+        window.exportMIDI = exportMIDI;
+        window.runAnalysis = runAnalysis;
+        window.runRestoration = runRestoration;
+        window.runValidation = runValidation;
+        window.previewRestored = previewRestored;
+        window.playAudition = playAudition;
+        window.stopAudition = stopAudition;
+        window.setAuditionMode = setAuditionMode;
+        window.zoomPianoRoll = zoomPianoRoll;
+        window.resetView = resetView;
+        window.toggleConfidenceView = toggleConfidenceView;
+        window.toggleWaveformOverlay = toggleWaveformOverlay;
+        window.showChordOverlay = showChordOverlay;
+        window.resetApplication = resetApplication;
+        window.showHelp = showHelp;
+        window.showAbout = showAbout;
+        window.useDetectedKey = useDetectedKey;
+        window.closeModal = closeModal;
     </script>
-
-<script>
-/* =====================================================================
-   v4.5 PATCH — Interactive Piano-Roll Editing
-   Merged from Midi-Clean-main v1.6 (multi-select, drag/resize/delete,
-   undo, keyboard shortcuts). Non-invasive: reads state.notes /
-   state.cleanedNotes and layout math matching renderPianoRoll().
-   ===================================================================== */
-(function(){
-  "use strict";
-  if (typeof state === 'undefined' || typeof canvas === 'undefined') return;
-
-  const editState = {
-    selected: new Set(),   // note object refs
-    undoStack: [],         // [{notesSnapshot, cleanedSnapshot, isCleaned}]
-    marquee: null,         // [x1,y1,x2,y2]
-    drag: null,            // {mode,startX,startY,anchor,orig:[{n,s,e,p}]}
-    layout: null,          // cached geometry from last render
-    manualEdits: 0,
-  };
-  window.__editState = editState;
-
-  function activeNotes() {
-    return (state.isCleaned && state.cleanedNotes.length) ? state.cleanedNotes : state.notes;
-  }
-
-  function computeLayout(){
-    const notes = activeNotes();
-    if (!notes || !notes.length) return null;
-    const w = canvas.width, h = canvas.height;
-    const minNote = Math.max(21, Math.min(...notes.map(n => n.note)) - 2);
-    const maxNote = Math.min(108, Math.max(...notes.map(n => n.note)) + 2);
-    const noteRange = maxNote - minNote + 1;
-    const maxTime = Math.max(...notes.map(n => n.end || n.start + 1000)) + 1000;
-    const padding = { top: 16, bottom: 28, left: 32, right: 12 };
-    const plotW = w - padding.left - padding.right;
-    const plotH = h - padding.top - padding.bottom;
-    const noteHeight = Math.min(plotH / noteRange, 9);
-    const timeScale = plotW / maxTime * state.zoomLevel;
-    return { w, h, minNote, maxNote, noteRange, maxTime, padding, plotW, plotH, noteHeight, timeScale };
-  }
-
-  // ---- Wrap renderPianoRoll to cache layout + draw selection/marquee overlay
-  const _origRender = window.renderPianoRoll;
-  if (typeof _origRender === 'function') {
-    window.renderPianoRoll = function(){
-      _origRender.apply(this, arguments);
-      const L = computeLayout(); editState.layout = L;
-      if (!L) return;
-      const notes = activeNotes();
-      // Selection outlines
-      ctx.save();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.5;
-      for (const n of notes) {
-        if (!editState.selected.has(n)) continue;
-        const x = L.padding.left + n.start * L.timeScale;
-        const endX = L.padding.left + (n.end || n.start + 1000) * L.timeScale;
-        const y = L.padding.top + (L.maxNote - n.note) * L.noteHeight;
-        ctx.strokeRect(x + 0.5, y + 0.5, Math.max(1, endX - x) - 1, Math.max(1, L.noteHeight - 1) - 1);
-      }
-      // Marquee
-      if (editState.marquee) {
-        const [a,b,c,d] = editState.marquee;
-        const rx = Math.min(a,c), ry = Math.min(b,d), rw = Math.abs(c-a), rh = Math.abs(d-b);
-        ctx.fillStyle = 'rgba(88,166,255,0.15)';
-        ctx.fillRect(rx, ry, rw, rh);
-        ctx.strokeStyle = '#58a6ff';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(rx + 0.5, ry + 0.5, rw - 1, rh - 1);
-      }
-      // Edit HUD
-      if (editState.manualEdits || editState.selected.size) {
-        ctx.fillStyle = 'rgba(88,166,255,0.9)';
-        ctx.font = '9px sans-serif';
-        ctx.textAlign = 'right';
-        ctx.textBaseline = 'top';
-        const msg = (editState.selected.size ? `${editState.selected.size} selected` : '') +
-                    (editState.selected.size && editState.manualEdits ? ' · ' : '') +
-                    (editState.manualEdits ? `${editState.manualEdits} edit${editState.manualEdits>1?'s':''}` : '');
-        ctx.fillText(msg, L.w - 8, 4);
-      }
-      ctx.restore();
-    };
-  }
-
-  function canvasXY(e){
-    const r = canvas.getBoundingClientRect();
-    return [ (e.clientX - r.left) * (canvas.width / r.width),
-             (e.clientY - r.top)  * (canvas.height / r.height) ];
-  }
-
-  function hitTest(px, py){
-    const L = editState.layout; if (!L) return null;
-    const notes = activeNotes();
-    for (let i = notes.length - 1; i >= 0; i--) {
-      const n = notes[i];
-      const x = L.padding.left + n.start * L.timeScale;
-      const endX = L.padding.left + (n.end || n.start + 1000) * L.timeScale;
-      const y = L.padding.top + (L.maxNote - n.note) * L.noteHeight;
-      const w = Math.max(1, endX - x), h = Math.max(2, L.noteHeight);
-      if (px >= x && px <= x + w && py >= y && py <= y + h) {
-        return { note: n, edge: (px >= x + w - Math.min(6, w * 0.4)) };
-      }
-    }
-    return null;
-  }
-
-  function snapshot(){
-    editState.undoStack.push({
-      notes: state.notes.map(n => ({...n})),
-      cleaned: state.cleanedNotes.map(n => ({...n})),
-      isCleaned: state.isCleaned,
-    });
-    if (editState.undoStack.length > 100) editState.undoStack.shift();
-  }
-  function doUndo(){
-    if (!editState.undoStack.length) return;
-    const s = editState.undoStack.pop();
-    state.notes = s.notes;
-    state.cleanedNotes = s.cleaned;
-    state.isCleaned = s.isCleaned;
-    editState.selected.clear();
-    editState.manualEdits = Math.max(0, editState.manualEdits - 1);
-    if (typeof renderPianoRoll === 'function') renderPianoRoll();
-    if (typeof updateStats === 'function') try{updateStats();}catch{}
-  }
-
-  function deleteSelected(){
-    if (!editState.selected.size) return;
-    snapshot();
-    const kill = editState.selected;
-    if (state.isCleaned && state.cleanedNotes.length) {
-      state.cleanedNotes = state.cleanedNotes.filter(n => !kill.has(n));
-    } else {
-      state.notes = state.notes.filter(n => !kill.has(n));
-    }
-    editState.selected.clear();
-    editState.manualEdits++;
-    if (typeof renderPianoRoll === 'function') renderPianoRoll();
-    if (typeof updateStats === 'function') try{updateStats();}catch{}
-  }
-  window.pianoRollDeleteSelected = deleteSelected;
-  window.pianoRollUndo = doUndo;
-
-  // ---- Pointer interactions
-  canvas.addEventListener('pointerdown', (e) => {
-    if (!activeNotes().length) return;
-    const L = editState.layout || computeLayout(); editState.layout = L; if (!L) return;
-    const [px, py] = canvasXY(e);
-    const hit = hitTest(px, py);
-    const additive = e.shiftKey || e.metaKey || e.ctrlKey;
-    canvas.setPointerCapture(e.pointerId);
-
-    if (!hit) {
-      // Marquee
-      const base = additive ? new Set(editState.selected) : new Set();
-      editState.selected = base;
-      editState.marquee = [px, py, px, py];
-      const move = (ev) => {
-        if (ev.pointerId !== e.pointerId) return;
-        const [mx, my] = canvasXY(ev);
-        editState.marquee = [px, py, mx, my];
-        const rx = Math.min(px,mx), ry = Math.min(py,my), rw = Math.abs(mx-px), rh = Math.abs(my-py);
-        const sel = new Set(base);
-        for (const n of activeNotes()) {
-          const nx = L.padding.left + n.start * L.timeScale;
-          const nex = L.padding.left + (n.end || n.start + 1000) * L.timeScale;
-          const ny = L.padding.top + (L.maxNote - n.note) * L.noteHeight;
-          if (nx < rx+rw && nex > rx && ny < ry+rh && ny + L.noteHeight > ry) sel.add(n);
-        }
-        editState.selected = sel;
-        if (typeof renderPianoRoll === 'function') renderPianoRoll();
-      };
-      const up = (ev) => {
-        if (ev.pointerId !== e.pointerId) return;
-        editState.marquee = null;
-        canvas.removeEventListener('pointermove', move);
-        canvas.removeEventListener('pointerup', up);
-        canvas.removeEventListener('pointercancel', up);
-        if (typeof renderPianoRoll === 'function') renderPianoRoll();
-      };
-      canvas.addEventListener('pointermove', move);
-      canvas.addEventListener('pointerup', up);
-      canvas.addEventListener('pointercancel', up);
-      if (typeof renderPianoRoll === 'function') renderPianoRoll();
-      return;
-    }
-
-    // Note hit
-    const already = editState.selected.has(hit.note);
-    if (additive) {
-      if (already) editState.selected.delete(hit.note);
-      else editState.selected.add(hit.note);
-    } else if (!already) {
-      editState.selected = new Set([hit.note]);
-    }
-    if (typeof renderPianoRoll === 'function') renderPianoRoll();
-    if (!editState.selected.has(hit.note)) return;
-
-    // Start drag/resize
-    const originals = [...editState.selected].map(n => ({ n, s:n.start, ee:(n.end||n.start+1000), p:n.note }));
-    let took = false;
-    const drag = { mode: hit.edge ? 'resize' : 'move', startX: px, startY: py, originals };
-    const move = (ev) => {
-      if (ev.pointerId !== e.pointerId) return;
-      const [mx, my] = canvasXY(ev);
-      const dx = (mx - drag.startX) / L.timeScale;
-      const dy = Math.round((my - drag.startY) / L.noteHeight);
-      if (!took && (Math.abs(mx-drag.startX) > 2 || Math.abs(my-drag.startY) > 2)) { snapshot(); took = true; }
-      const minStart = Math.min(...originals.map(o => o.s));
-      const shiftDx = Math.max(dx, -minStart);
-      for (const o of originals) {
-        if (drag.mode === 'resize') {
-          const ne = Math.max(o.s + 1, Math.round(o.ee + dx));
-          o.n.end = ne; o.n.duration = ne - o.n.start;
-        } else {
-          const ns = Math.max(0, Math.round(o.s + shiftDx));
-          const dur = o.ee - o.s;
-          o.n.start = ns; o.n.end = ns + dur; o.n.duration = dur;
-          o.n.note = Math.max(0, Math.min(127, o.p - dy));
-        }
-      }
-      if (typeof renderPianoRoll === 'function') renderPianoRoll();
-    };
-    const up = (ev) => {
-      if (ev.pointerId !== e.pointerId) return;
-      if (took) { editState.manualEdits++; }
-      canvas.removeEventListener('pointermove', move);
-      canvas.removeEventListener('pointerup', up);
-      canvas.removeEventListener('pointercancel', up);
-      if (typeof renderPianoRoll === 'function') renderPianoRoll();
-      if (typeof updateStats === 'function') try{updateStats();}catch{}
-    };
-    canvas.addEventListener('pointermove', move);
-    canvas.addEventListener('pointerup', up);
-    canvas.addEventListener('pointercancel', up);
-  });
-
-  // Cursor feedback
-  canvas.addEventListener('pointermove', (e) => {
-    if (editState.drag || editState.marquee) return;
-    if (e.pointerType !== 'mouse') return;
-    const [px, py] = canvasXY(e);
-    const hit = hitTest(px, py);
-    canvas.style.cursor = hit ? (hit.edge ? 'ew-resize' : 'grab') : 'crosshair';
-  });
-
-  // Keyboard shortcuts
-  document.addEventListener('keydown', (e) => {
-    const tag = (document.activeElement && document.activeElement.tagName) || '';
-    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
-    if ((e.key === 'z' || e.key === 'Z') && (e.metaKey || e.ctrlKey)) { e.preventDefault(); doUndo(); return; }
-    if ((e.key === 'Delete' || e.key === 'Backspace') && editState.selected.size) { e.preventDefault(); deleteSelected(); return; }
-    if ((e.key === 'a' || e.key === 'A') && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      editState.selected = new Set(activeNotes());
-      if (typeof renderPianoRoll === 'function') renderPianoRoll();
-      return;
-    }
-    if (e.key === 'Escape' && editState.selected.size) {
-      editState.selected.clear();
-      if (typeof renderPianoRoll === 'function') renderPianoRoll();
-    }
-  });
-
-  // Add compact editing toolbar to the piano-roll controls
-  const controls = document.querySelector('.piano-roll-controls');
-  if (controls) {
-    const sep = document.createElement('span'); sep.className = 'sep'; sep.textContent = '|';
-    const undoBtn = document.createElement('button'); undoBtn.textContent = '↶'; undoBtn.title = 'Undo (Ctrl+Z)';
-    undoBtn.onclick = doUndo;
-    const delBtn = document.createElement('button'); delBtn.textContent = '🗑'; delBtn.title = 'Delete selected (Del)';
-    delBtn.onclick = deleteSelected;
-    controls.appendChild(sep);
-    controls.appendChild(undoBtn);
-    controls.appendChild(delBtn);
-  }
-
-  console.log('[v4.5] Interactive piano-roll editing enabled: click/shift-click, marquee, drag, resize, Del, Ctrl+Z, Ctrl+A, Esc.');
-})();
-</script>
-
 </body>
 </html>
